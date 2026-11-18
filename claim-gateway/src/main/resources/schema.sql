@@ -145,3 +145,68 @@ CREATE TABLE IF NOT EXISTS core_register (
     result VARCHAR(64),
     ts BIGINT
 );
+
+-- ── 风控批处理：欺诈关联图谱（P0 关系库存储，生产同步 NebulaGraph）──
+-- graph_case_shop = 案件↔修理厂关联（报案/定损登记）；repair_shop_flag = 风险标记登记表
+-- source 区分人工标记(MANUAL)与图谱批处理自动标记(GRAPH_BATCH)，重建只清后者
+ALTER TABLE repair_shop_flag ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'MANUAL';
+
+CREATE TABLE IF NOT EXISTS graph_case_shop (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    case_no VARCHAR(64),
+    shop_name VARCHAR(128),
+    source VARCHAR(16) DEFAULT 'INTAKE',
+    ts BIGINT,
+    CONSTRAINT uq_case_shop UNIQUE (case_no, shop_name)
+);
+
+CREATE TABLE IF NOT EXISTS graph_node (
+    node_type VARCHAR(16),
+    node_key VARCHAR(128),
+    label VARCHAR(256),
+    props_json VARCHAR(2000),
+    ts BIGINT,
+    PRIMARY KEY (node_type, node_key)
+);
+
+CREATE TABLE IF NOT EXISTS graph_edge (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    src_type VARCHAR(16),
+    src_key VARCHAR(128),
+    dst_type VARCHAR(16),
+    dst_key VARCHAR(128),
+    edge_type VARCHAR(32),
+    ts BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS graph_build_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ts BIGINT,
+    trigger_by VARCHAR(16),
+    node_count INT,
+    edge_count INT,
+    shop_count INT,
+    new_flag_count INT,
+    duration_ms BIGINT
+);
+
+-- ── 风控批处理：金标回归（确定性核心重放，漂移即红）──
+CREATE TABLE IF NOT EXISTS gold_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ts BIGINT,
+    trigger_by VARCHAR(16),
+    total INT,
+    passed INT,
+    failed INT,
+    duration_ms BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS gold_case_result (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT,
+    gold_id VARCHAR(32),
+    name VARCHAR(128),
+    passed INT,
+    mismatches_json VARCHAR(2000),
+    ts BIGINT
+);

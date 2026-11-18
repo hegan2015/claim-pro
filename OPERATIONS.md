@@ -21,18 +21,21 @@
 
 **权力分层**（理解系统行为的前提）：AI agent 只做理解/查证/起草/沟通；资格判定、金额计算、审批生效、资金划转由确定性核心执行；流程走向由编排引擎（Temporal 或本地管道）控制。AI 不可用时业务不停摆，案件转人工通道。
 
-## 2. 快速开始（零中间件，30 秒）
+## 2. 快速开始
 
 ```bash
 cd claim-pro
-./run.sh                    # 默认 local profile：H2 + 本地管道，无需任何中间件
+./run.sh                    # 默认 mysql profile：MySQL claim 库 + 本地管道（需 claim-shared-mysql 运行中）
 # 就绪后打开 http://127.0.0.1:8097/
-python3 smoke-test.py       # 端到端冒烟 14 项（可选，验证全链路）
+python3 smoke-test.py       # 端到端冒烟 19 项（可选，验证全链路+批处理）
 ./stop.sh                   # 停止服务（不删数据）
 ```
 
+- **零依赖开发**：`CLAIM_PROFILE=local ./run.sh`（H2 文件库，无需任何中间件）。
 - 首次启动自动编译打包（约 1 分钟），之后秒起。
-- 启动日志出现「本地开发管道运行中，非生产编排」属正常告警——local 档位定位是功能验证/演示。
+- mysql 档位前置：ops-pro 的 claim-shared-mysql 运行中；库表已初始化（`deploy/mysql/001_schema.sql` + `002_seed.sql`，见第 8 节）；账号口令在 `~/.config/claim-pro/claim.properties`。
+- 启动日志出现「本地开发管道运行中，非生产编排」属正常告警——local/mysql 档位编排定位是功能验证/演示。
+- 启动时图谱构建与金标回归各自动跑一次（STARTUP），日志可见「图谱构建完成」「金标回归完成」。
 - 重启后未决案件自动续接等待节点（日志「本地管道已恢复 N 个未决案件的等待节点」）。
 - **数据纪律**：`data/` 与 H2 库文件的删除/重置必须先经负责人明确确认；停服务可以，删数据不行。
 
@@ -110,10 +113,20 @@ python3 smoke-test.py       # 端到端冒烟 14 项（可选，验证全链路�
 - 证据哈希链：每步决策证据 SHA-256 链式锚定，详情页「证据链校验」一键验证 `chainValid`。
 - 对账：`POST /api/recon/run` 触发双账本核对，差异进 `recon_diff` 表，仪表盘显示未决差异数。
 
+### 3.7 风控批处理（图谱构建 / 金标回归）
+
+- **四指标卡**：图谱节点/边数、标记修理厂数（人工+批处理）、金标通过率。
+- **欺诈关联图谱**：T+1 全量重建「案件—保单—修理厂」图；标记规则=同厂 ≥3 案 或 ≥2 笔高额案（>¥5 万）；标记回写 `repair_shop_flag`（source=GRAPH_BATCH）→ `graph.flagged` 工具 → 欺诈评分 +30 → 路由闭环。人工标记（MANUAL）永久保留，重建只清批处理标记。「立即构建」手动触发；修理厂表含关联案件链接/高额案/累计估损/标记原因。
+- **金标回归**：15 条核赔师标注案纯代码重放（核保→评分→分级→理算→审批数），不触碰 LLM/业务表；漂移即红，逐案明细含期望/实际。「执行回归」手动触发。
+- **调度**：mysql/default 档位由 **XXL-Job 调度中心**（:8094，ops-pro 纳管）接管——图谱每日 02:30（graphBuildJobHandler）、金标每日 03:00（goldRegressionJobHandler），执行器 claim-pro-executor :9999 自动注册；local 零依赖档位 Spring cron 兜底（`claim.batch.graph-cron` / `claim.batch.gold-cron` 可配）。启动各跑一次 + 手动 API 保留；失败只记日志不阻断主链路。
+- 仪表盘「金标回归 15/15 · 批处理中心 →」状态行直达本页。
+- 生产差异：NebulaGraph 图存储 + 金标库 ≥2000 案（DESIGN §11.18/§11.19）；XXL-Job 日终调度已落地（运维见第 6 节）。
+
 ## 4. 服务运维（claim-pro）
 
 ```bash
-./run.sh                                  # local 档位（默认）
+./run.sh                                  # mysql 档位（默认）：MySQL claim 库 + 本地管道
+CLAIM_PROFILE=local ./run.sh              # 零依赖档位：H2 文件库 + 本地管道
 CLAIM_PROFILE=default ./run.sh            # 生产编排档位（需中间件就绪，见第 6/8 节）
 CLAIM_PORT=8097 ./run.sh                  # 自定义端口（默认 8097）
 ./stop.sh                                 # 停止
@@ -123,8 +136,8 @@ tail -f logs/claim-pro.out                  # 实时日志
 cat run/claim.pid                           # 进程 PID
 ```
 
-- **重启恢复**：local 档位按案件状态续接等待节点（REPORTED/MATERIALS_PENDING 重跑管道；APPROVING 按最近核保结论区分赔付审批/拒赔确认；MANUAL 续接人工处理）；其余中间态告警不自动续接。生产档位由 Temporal durable 执行天然跨重启恢复，无此限制。
-- 前端静态资源 local 档位从源码目录热加载（改 `claim-gateway/src/main/resources/static/` 刷新浏览器即生效，无需重启）。
+- **重启恢复**：local/mysql 档位按案件状态续接等待节点（REPORTED/MATERIALS_PENDING 重跑管道；APPROVING 按最近核保结论区分赔付审批/拒赔确认；MANUAL 续接人工处理）；其余中间态告警不自动续接。生产档位由 Temporal durable 执行天然跨重启恢复，无此限制。
+- 前端静态资源 local/mysql 档位从源码目录热加载（改 `claim-gateway/src/main/resources/static/` 刷新浏览器即生效，无需重启；浏览器须强制刷新加载新 JS）。
 - 构建验证务必 `./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?`——管道接 tail 会掩盖真实退出码。
 
 ## 5. ops-pro 运维控制台
@@ -134,17 +147,18 @@ cd ops-pro && ./run.sh      # 启动（8098）
 ./stop.sh                   # 停止（审计与状态保留）
 ```
 
-五个页面：
+六个页面：
 - **总览**：应用/中间件运行比、Docker 环境状态、共享复用拓扑图、实时操作动态。
 - **应用管理**：claim/cs/ride/payment/yiwu 五应用卡片，启动/停止按钮（按各仓库 run.sh/stop.sh，端口探测判活）。
-- **共享中间件**：7 服务卡片（状态/端口/控制台链接/使用方），单个或全部启停。**停止不删数据**。
+- **共享中间件**：10 服务卡片（状态/端口/控制台链接/使用方），单个或全部启停。**停止不删数据**。
+- **运维工具**：Adminer（:8089）/RocketMQ 控制台（:19876）/Dubbo Admin×2（:8086/:8087）/**XXL-Job 调度中心（:8094）**入口卡片。
 - **日志中心**：选日志源（六应用）→ 选文件 → 查看尾部；SSE 实时尾随。
 - **操作审计**：全部启停操作留痕，持久化 `data/state.json`（上限 500 条），失败带完整报错详情。
 
 API 速查：
 
 ```
-GET  /api/apps · /api/middleware · /api/docker-status · /api/audit
+GET  /api/apps · /api/middleware · /api/docker-status · /api/tools · /api/audit
 POST /api/apps/{name}/start|stop
 POST /api/middleware/start-all|stop-all|{name}/start|stop
 GET  /api/logs/sources · /api/logs?source=&file=&tail= · /api/logs/stream（SSE）
@@ -166,9 +180,12 @@ export PATH="$HOME/.docker/bin:$PATH"
 | rocketmq-namesrv | 9876 | — | apache/rocketmq:5.1.4 |
 | rocketmq-broker | 10911 | — | 同上（自动创建 Topic） |
 | rocketmq-dashboard | 19876 | :19876 | apacherocketmq/rocketmq-dashboard:1.0.0 |
-| mysql | 3306 | — | mysql:8（初始库 claim） |
+| mysql | 3306 | — | mysql:8（初始库 claim / xxl_job） |
 | redis | 6379 | — | redis:7 |
 | minio | 9000 | :9001 | minio/minio:RELEASE.2024-06-13T22-53-53Z（源码构建，见下） |
+| zookeeper | 2181 | — | zookeeper（payment-pro Dubbo 注册） |
+| zookeeper-ride | 2182 | — | zookeeper（ride-pro docker 模式 Dubbo 注册） |
+| xxl-job-admin | 8094 | :8094/xxl-job-admin | xuxueli/xxl-job-admin:2.4.1（daocloud 拉取，见下） |
 
 日常启停一律经 ops-pro 页面（或第 5 节 API），不手动 docker compose，避免项目名/卷不一致。
 
@@ -189,10 +206,29 @@ docker build -f minio-from-source.Dockerfile -t minio/minio:RELEASE.2024-06-13T2
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9000/minio/health/live   # 200
 ```
 
+### XXL-Job 调度中心（claim-pro 风控批处理）
+
+- **访问**：http://127.0.0.1:8094/xxl-job-admin（ops-pro「运维工具」页有入口）。账号 admin，口令在 `~/.config/ops-pro/ops.properties` 的 `xxljob.admin.password`（默认口令已改，勿用 123456）。
+- **调度库**：共享 MySQL 内 `xxl_job` 库（8 表，官方 DDL 存档 `ops-pro/deploy/xxl-job/tables_xxl_job.sql`），专用账号 xxljob；口令 `xxljob.db.password`。
+- **通信令牌**：admin 与执行器共用 accessToken，ops 侧 `xxljob.access.token`、claim 侧 `claim.xxljob.access-token`（`~/.config/claim-pro/claim.properties`），两处必须同值；compose 经 `XXL_JOB_DB_PASSWORD`/`XXL_JOB_ACCESS_TOKEN` 注入。
+- **执行器**：claim-pro 内嵌（xxl-job-core 2.4.1），appname=claim-pro-executor，端口 9999，executor-ip=host.docker.internal（admin 容器经 Docker Desktop DNS 回调宿主）；mysql/default 档位自动装配，local 档位关闭（Spring cron 兜底，防双调度）。
+- **任务**：执行器组「理赔风控批处理」（自动注册）下两条 BEAN 任务——欺诈关联图谱 T+1 构建（graphBuildJobHandler，CRON `0 30 2 * * ?`，失败重试 1 次）、金标 15 案回归（goldRegressionJobHandler，CRON `0 0 3 * * ?`，漂移即失败不重试）。FIRST 路由/串行阻塞/过期跳过。
+- **手工触发验证**：管理台「任务管理→执行一次」，或 API（先登录取 Cookie）：
+
+```bash
+B=http://127.0.0.1:8094/xxl-job-admin
+curl -s -c /tmp/xxl-cookie.txt -d 'userName=admin&password=<xxljob.admin.password>' $B/login
+curl -s -b /tmp/xxl-cookie.txt -d 'id=2&executorParam=&addressList=' $B/jobinfo/trigger   # 图谱
+curl -s -b /tmp/xxl-cookie.txt -d 'id=3&executorParam=&addressList=' $B/jobinfo/trigger   # 金标
+# 成功标志：调度日志 trigger/handle 均 200；claim 库 graph_build_run/gold_run 出现 trigger_by=XXL_JOB 行
+```
+
+- 执行器心跳：`xxl_job_registry` 表应有 `claim-pro-executor → http://host.docker.internal:9999/`；执行日志落 claim-pro `logs/xxl-job/`（保留 30 天）。
+
 ### 数据卷与口令
 
-- 卷：claim-shared-temporal/-temporal-db/-rocketmq-*/-mysql/-redis/-minio，停止/重启不丢数据；**删卷重置须负责人明确确认**。
-- MySQL/MinIO 口令：`~/.config/ops-pro/ops.properties`（目录 700/文件 600），仓库只留 `config/ops.properties.example`；compose 经环境变量注入。
+- 卷：claim-shared-temporal/-temporal-db/-rocketmq-*/-mysql/-redis/-minio/-xxl-job-admin，停止/重启不丢数据；**删卷重置须负责人明确确认**。
+- MySQL/MinIO/XXL-Job 口令：`~/.config/ops-pro/ops.properties`（目录 700/文件 600），仓库只留 `config/ops.properties.example`；compose 经环境变量注入。
 
 ## 7. AI 能力配置（可选）
 
@@ -213,7 +249,7 @@ chmod 600 ~/.config/claim-pro/claim.properties
 ## 8. 切换生产编排档位
 
 ```bash
-# 1. ops-pro 页面「全部启动」中间件（7/7 运行中）
+# 1. ops-pro 页面「全部启动」中间件（含 XXL-Job 调度中心）
 # 2. 配置生产口令（MySQL/MinIO，见第 6 节）
 # 3. 重启 claim-pro 到生产档位
 cd claim-pro && ./stop.sh
@@ -223,18 +259,50 @@ curl -s http://127.0.0.1:8097/api/runtime    # orchestration 应为 TEMPORAL
 
 - 生产档位：Temporal 编排（案件=workflow 实例，workflowId=案件号）、MySQL 案件库、RocketMQ 事件+支付事务消息、MinIO 证据存储。
 - Temporal 未就绪时应用仍可启动，报案接口返回 503 并提示启动中间件（不做静默 mock）。
-- local 的 H2 数据与生产 MySQL 是两套库，切换不迁移数据；演示数据留在 local。
+- local 的 H2 数据与 mysql/default 的 MySQL claim 库是两套库；**mysql 与 default 共用 claim 库**，切换不丢数据。
+
+### 8.1 H2 → MySQL 一次性迁移（已执行，2026-11-18）
+
+```bash
+./stop.sh                                        # 1. 停应用（H2 文件释放写锁）
+# 2. 建表（20 表，幂等 IF NOT EXISTS）
+docker exec -i claim-shared-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 claim < deploy/mysql/001_schema.sql
+# 3. 迁移（H2 只读 ACCESS_MODE_DATA=r，逐表行数校验，失败回滚；口令走环境变量不回显）
+MIGRATE_MYSQL_PASSWORD='<claim 账号口令>' java -cp <h2.jar>:<mysql-connector-j.jar> \
+  deploy/mysql/MigrateH2ToMysql.java ./data/claim \
+  'jdbc:mysql://127.0.0.1:3306/claim?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf8' claim
+# 4. 种子补齐（INSERT IGNORE 幂等；务必 --default-character-set=utf8mb4 防中文双重编码）
+docker exec -i claim-shared-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 claim < deploy/mysql/002_seed.sql
+./run.sh                                         # 5. mysql profile 启动
+```
+
+- 迁移覆盖 14 张业务表（案件/材料/审批/双账本/outbox/证据索引/决策/审计/核心登记等）；派生图表（graph_*）与金标表由启动批处理重建，不迁移。
+- H2 快照无 `graph_case_shop` 表时工具自动 SKIP，由种子补齐。
+- **H2 文件原样保留作备份**（data/claim.mv.db），删除须先经负责人确认。
+- 实测：16 案/129 证据/133 决策全量迁移行数校验 OK，切库后冒烟 19/19。
 
 ## 9. 验证与测试
 
 ```bash
 cd claim-pro
-./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?     # 单测 17 项（脱敏/计算器/双账本审批/核保规则）
-python3 smoke-test.py                            # 冒烟 14 项，需服务已启动
+./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?     # 单测 28 项（脱敏/网关/计算器/双账本审批/核保/描述规则/图谱/金标）
+python3 smoke-test.py                            # 冒烟 19 项，需服务已启动
 python3 smoke-test.py http://127.0.0.1:8097      # 显式指定地址
 ```
 
-冒烟覆盖：健康→运行时→报案建案→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计。
+冒烟覆盖：健康→运行时→报案建案→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归零漂移/逐案结果。
+
+批处理手工验证：
+
+```bash
+curl -s -X POST http://127.0.0.1:8097/api/graph/build     # 立即构建（返回节点/边/新标记数）
+curl -s http://127.0.0.1:8097/api/graph/summary           # 修理厂风险表
+curl -s http://127.0.0.1:8097/api/graph/case/<案件号>      # 案件邻域（同厂兄弟案）
+curl -s -X POST http://127.0.0.1:8097/api/gold/run        # 执行回归（15/15 为零漂移）
+curl -s http://127.0.0.1:8097/api/gold/latest             # 最近运行+逐案结果
+```
+
+XXL-Job 调度验证（mysql 档位）：管理台「执行一次」两任务（见第 6 节 XXL-Job 小节），调度日志 trigger/handle 均 200，claim 库出现 trigger_by=XXL_JOB 行即通过；执行器心跳查 xxl_job_registry。
 
 手工 E2E 路径（浏览器）：报案登记填样本 → 提交 → 案件列表找到新案 → 详情「一键补件」→ 工作台审批通过 → 详情确认 CLOSED + 双账本 + 时间线完整。
 
@@ -270,9 +338,9 @@ python3 smoke-test.py http://127.0.0.1:8097      # 显式指定地址
 | ops-pro | 8098 | payment-pro | 8080 系 |
 | cs-pro | 8096（双开 8099） | yiwu-pro | 8095 |
 
-中间件：3306/6379/7233/8088/9876/10911/19876/9000/9001。
+中间件：3306/6379/7233/8088/9876/10911/19876/9000/9001/2181/2182/**8094（XXL-Job admin）**；claim-pro 执行器 **9999**。
 
-## 附录 B：种子保单（local 档位 data.sql，MERGE 幂等）
+## 附录 B：种子保单（local 档位 data.sql / mysql 档位 deploy/mysql/002_seed.sql，幂等）
 
 | 保单号 | 有效期 | 承保类型 | 限额 | 免赔额 | 折旧率 |
 |---|---|---|---|---|---|
@@ -295,6 +363,13 @@ POST /api/claims/{no}/dispute             异议升级（reason）
 GET  /api/claims/{no}/evidence/verify     证据哈希链校验
 GET  /api/claims/{no}/tool-audit          工具调用审计
 POST /api/recon/run · GET /api/recon/diffs  对账
+POST /api/graph/build                     图谱立即构建（MANUAL）
+GET  /api/graph/summary                   图谱摘要（最近运行+修理厂风险表）
+GET  /api/graph/case/{no}                 案件邻域（一跳+同厂兄弟案）
+GET  /api/graph/history                   构建历史（最近 20）
+POST /api/gold/run                        金标回归执行（MANUAL）
+GET  /api/gold/latest                     最近运行+逐案结果
+GET  /api/gold/history                    运行历史
 GET  /api/stats · /api/audit/recent       统计 / 审计事件
 GET  /api/runtime · /actuator/health      运行时档位 / 健康
 POST /api/agent/intake|notify|review/{no} AI 能力（503=降级）

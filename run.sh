@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# claim-pro 启动脚本。默认 local profile（H2+本地管道，零中间件可跑）；
-# 生产：CLAIM_PROFILE=default 并确保 MySQL/Temporal/RocketMQ/MinIO 已由 ops-pro 启动。
+# claim-pro 启动脚本。默认 mysql profile（claim-shared-mysql 数据库 + 本地编排，库表见 deploy/mysql/）；
+# 零依赖开发：CLAIM_PROFILE=local（H2 文件库）；
+# 全栈生产：CLAIM_PROFILE=default 并确保 MySQL/Temporal/RocketMQ/MinIO 已由 ops-pro 启动。
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PROFILE="${CLAIM_PROFILE:-local}"
+PROFILE="${CLAIM_PROFILE:-mysql}"
 PORT="${CLAIM_PORT:-8097}"
 JAR="claim-gateway/target/claim-pro.jar"
 mkdir -p logs run data

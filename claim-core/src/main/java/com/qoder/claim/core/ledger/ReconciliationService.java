@@ -28,12 +28,18 @@ public class ReconciliationService {
         long now = System.currentTimeMillis();
         for (Map<String, Object> d : diffs) {
             jdbc.update("INSERT INTO recon_diff(case_no, batch, biz_amount, fund_amount, status, ts) VALUES(?,?,?,?,?,?)",
-                    d.get("case_no"), d.get("batch"), d.get("biz_amount"), d.get("fund_amount"), "OPEN", now);
+                    val(d, "case_no"), val(d, "batch"), val(d, "biz_amount"), val(d, "fund_amount"), "OPEN", now);
         }
         return diffs.size();
     }
 
     public List<Map<String, Object>> openDiffs() {
         return jdbc.queryForList("SELECT * FROM recon_diff WHERE status='OPEN' ORDER BY ts");
+    }
+
+    // H2 返回大写列名、MySQL 小写：兼容取值
+    private static Object val(Map<String, Object> row, String key) {
+        Object v = row.get(key);
+        return v != null ? v : row.get(key.toUpperCase());
     }
 }

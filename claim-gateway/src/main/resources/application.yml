@@ -34,6 +34,16 @@ claim:
   mq:
     enabled: ${CLAIM_MQ_ENABLED:true}
     namesrv: ${CLAIM_ROCKETMQ_NAMESRV:127.0.0.1:9876}
+  xxljob:
+    enabled: ${CLAIM_XXLJOB_ENABLED:true}
+    admin-addresses: ${CLAIM_XXLJOB_ADMIN:http://127.0.0.1:8094/xxl-job-admin}
+    appname: claim-pro-executor
+    # 调度中心在容器内，经 Docker Desktop DNS 回调宿主执行器
+    executor-ip: ${CLAIM_XXLJOB_EXECUTOR_IP:host.docker.internal}
+    port: ${CLAIM_XXLJOB_PORT:9999}
+    access-token: ${CLAIM_XXLJOB_TOKEN:}
+    logpath: logs/xxl-job
+    logretentiondays: 30
   minio:
     enabled: ${CLAIM_MINIO_ENABLED:true}
     endpoint: ${CLAIM_MINIO_ENDPOINT:http://127.0.0.1:9000}

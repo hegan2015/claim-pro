@@ -123,6 +123,7 @@ const ROUTES = {
   cases: ['案件列表', renderCases],
   workbench: ['人工工作台', renderWorkbench],
   audit: ['审计追溯', renderAudit],
+  batch: ['风控批处理', renderBatch],
 };
 
 function route() {
@@ -148,9 +149,10 @@ window.addEventListener('hashchange', route);
 /* ───────── 仪表盘 ───────── */
 async function renderDashboard(view) {
   try {
-    const [stats, audit, diffs] = await Promise.all([
-      api('/stats'), api('/audit/recent?limit=14'), api('/recon/diffs'),
+    const [stats, audit, diffs, gold] = await Promise.all([
+      api('/stats'), api('/audit/recent?limit=14'), api('/recon/diffs'), api('/gold/latest'),
     ]);
+    const gr = gold.run ? norm([gold.run])[0] : null;
     const fastRatio = stats.totalCases ? Math.round(stats.fastCases / stats.totalCases * 100) : 0;
     const chEntries = Object.entries(stats.byChannel || {});
     const stEntries = Object.entries(stats.byStatus || {}).sort((a, b) => b[1] - a[1]);
@@ -190,6 +192,10 @@ async function renderDashboard(view) {
             <button class="btn sm" id="reconRun">执行对账</button>
           </div>
           <div id="reconList" class="mt">${diffTable(diffs)}</div>
+          <div class="row spread mt">
+            <span class="small muted">金标回归 <b class="mono" style="color:${gr ? (gr.failed > 0 ? 'var(--rose)' : 'var(--green)') : 'var(--muted)'}">${gr ? gr.passed + '/' + gr.total : '未运行'}</b></span>
+            <a class="btn sm ghost" href="#/batch" style="text-decoration:none">批处理中心 →</a>
+          </div>
         </div>
       </div>
       <div class="card mt">
@@ -861,6 +867,123 @@ async function renderAudit(view) {
   $('#auditStep').onchange = e => { filters.step = e.target.value; renderRows(); };
   $('#auditQ').oninput = e => { filters.q = e.target.value; renderRows(); };
   renderRows();
+}
+
+/* ───────── 风控批处理 ───────── */
+async function renderBatch(view) {
+  let gs, gl, gh, ghist;
+  try {
+    [gs, gl, gh, ghist] = await Promise.all([
+      api('/graph/summary'), api('/gold/latest'), api('/gold/history'), api('/graph/history'),
+    ]);
+  } catch (e) { view.innerHTML = errCard(e); return; }
+  const run = gs.latestRun ? norm([gs.latestRun])[0] : null;
+  const gr = gl.run ? norm([gl.run])[0] : null;
+  const results = norm(gl.results);
+  const shops = gs.shops || [];
+  const flaggedShops = shops.filter(s => s.flagged).length;
+  const passRate = gr && gr.total ? Math.round(gr.passed / gr.total * 100) : 0;
+
+  view.innerHTML = `
+    <div class="grid g4">
+      ${statCard('c-teal', '图谱节点', gs.nodeCount ?? 0, '案件 / 保单 / 修理厂', '个')}
+      ${statCard('c-blue', '图谱边', gs.edgeCount ?? 0, 'INSURED_BY / REPAIRED_AT', '条')}
+      ${statCard('c-rose', '标记修理厂', flaggedShops, `人工标记 ${gs.manualFlagCount ?? 0} · 批处理标记 ${gs.batchFlagCount ?? 0}`, '家')}
+      ${statCard('c-amber', '金标通过率', gr ? passRate + '%' : '—', gr ? `${gr.passed}/${gr.total} 案通过` : '尚未运行', '')}
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">
+        <h3>欺诈关联图谱<span class="sub">T+1 批处理 · 全量重建 · 标记回写 graph.flagged 工具</span></h3>
+        <div class="kv">
+          ${kv('最近构建', run ? `${fmtFull(run.ts)}<br><span class="small muted">${esc(run.trigger_by)} · ${run.duration_ms}ms</span>` : '尚未运行')}
+          ${kv('新增标记', run ? `<span class="mono">${run.new_flag_count}</span> 条` : '—')}
+        </div>
+        <div class="row spread mt">
+          <span class="hint">标记规则：同厂 ≥3 案 或 ≥2 笔高额案（&gt;¥5 万）</span>
+          <button class="btn sm" id="graphRun">立即构建</button>
+        </div>
+        <div class="table-wrap mt"><table>
+          <thead><tr><th>修理厂</th><th>关联案件</th><th>高额案</th><th>累计估损</th><th>状态</th></tr></thead>
+          <tbody>
+            ${shops.map(s => `<tr>
+              <td><b>${esc(s.shopName)}</b><div class="small faint">${(s.reasons || []).map(esc).join('；')}</div></td>
+              <td>${(s.cases || []).map(no => `<a href="#/case/${esc(no)}" class="mono small" style="color:var(--cyan);text-decoration:none">${esc(no)}</a>`).join('<br>')}</td>
+              <td class="mono small">${s.highAmountCount}</td>
+              <td class="money small">${yuan(s.totalEstimateCents)}</td>
+              <td>${s.flagged ? '<span class="st st-bad">已标记</span>' : '<span class="st st-ok">正常</span>'}</td>
+            </tr>`).join('') || '<tr><td colspan="5"><div class="empty"><em>◉</em>暂无修理厂关联数据</div></td></tr>'}
+          </tbody>
+        </table></div>
+        <h3 class="mt">构建历史<span class="sub">最近 5 次</span></h3>
+        <div class="feed">${norm(ghist).slice(0, 5).map(r => `
+          <div class="feed-item"><span class="t">${fmtTime(r.ts)}</span>
+            <div><span class="who">${esc(r.trigger_by)}</span>
+              <span class="what"> · ${r.node_count} 节点 / ${r.edge_count} 边 / 新标记 ${r.new_flag_count} · ${r.duration_ms}ms</span></div>
+          </div>`).join('') || '<p class="hint">暂无构建记录</p>'}
+        </div>
+      </div>
+      <div class="card">
+        <h3>金标回归<span class="sub">确定性核心重放 · 漂移即红 · 不触碰 LLM</span></h3>
+        <div class="kv">
+          ${kv('最近运行', gr ? `${fmtFull(gr.ts)}<br><span class="small muted">${esc(gr.trigger_by)} · ${gr.duration_ms}ms</span>` : '尚未运行')}
+          ${kv('结果', gr ? (gr.failed > 0 ? `<span style="color:var(--rose)">${gr.failed} 案漂移</span>` : '<span style="color:var(--green)">全部通过 ✓</span>') : '—')}
+        </div>
+        <div class="row spread mt">
+          <span class="hint">重放：核保 → 欺诈评分 → 分级 → 理算 → 审批数</span>
+          <button class="btn sm" id="goldRun">执行回归</button>
+        </div>
+        <h3 class="mt">运行历史<span class="sub">最近 8 次</span></h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>触发</th><th>通过/总数</th><th>结果</th></tr></thead>
+          <tbody>
+            ${norm(gh).slice(0, 8).map(r => `<tr>
+              <td class="small muted mono">${fmtFull(r.ts)}</td>
+              <td class="small">${esc(r.trigger_by)}</td>
+              <td class="mono small">${r.passed}/${r.total}</td>
+              <td>${r.failed > 0 ? '<span class="st st-bad">漂移</span>' : '<span class="st st-ok">通过</span>'}</td>
+            </tr>`).join('') || '<tr><td colspan="4"><div class="empty"><em>◉</em>暂无运行记录</div></td></tr>'}
+          </tbody>
+        </table></div>
+        <p class="hint mt">金标案 = 核赔师标注的期望裁决。规则引擎 / 计算器 / 评分器 / 阈值任何改动导致裁决偏离金标，回归立即报红。生产由 XXL-Job 日终调度。</p>
+      </div>
+    </div>
+    <div class="card mt">
+      <h3>金标逐案结果<span class="sub">${gr ? '运行 #' + gr.id + ' · ' + fmtFull(gr.ts) : '尚未运行'}</span></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>编号</th><th>场景</th><th>结果</th><th>漂移明细</th></tr></thead>
+        <tbody>
+          ${results.map(r => `<tr>
+            <td class="mono small" style="color:var(--cyan)">${esc(r.gold_id)}</td>
+            <td>${esc(r.name)}</td>
+            <td>${Number(r.passed) === 1 ? '<span class="st st-ok">通过</span>' : '<span class="st st-bad">漂移</span>'}</td>
+            <td>${Number(r.passed) === 1 ? '<span class="faint small">—</span>' : `<details class="json"><summary>查看差异</summary><pre>${esc(prettyJson(r.mismatches_json))}</pre></details>`}</td>
+          </tr>`).join('') || '<tr><td colspan="4"><div class="empty"><em>◉</em>暂无结果，点击「执行回归」</div></td></tr>'}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  $('#graphRun').onclick = async () => {
+    const btn = $('#graphRun'); btn.disabled = true; btn.textContent = '构建中…';
+    try {
+      const r = await api('/graph/build', { method: 'POST' });
+      toast(`图谱构建完成：${r.nodeCount} 节点 / ${r.edgeCount} 边，新增标记 ${r.newFlagCount} 条`, 'ok');
+      renderBatch(view);
+    } catch (e) {
+      toast('图谱构建失败：' + e.message, 'err');
+      btn.disabled = false; btn.textContent = '立即构建';
+    }
+  };
+  $('#goldRun').onclick = async () => {
+    const btn = $('#goldRun'); btn.disabled = true; btn.textContent = '回归中…';
+    try {
+      const r = await api('/gold/run', { method: 'POST' });
+      toast(r.failed > 0 ? `${r.failed} 案金标漂移，请立即核查规则改动` : `金标回归 ${r.passed}/${r.total} 全部通过`, r.failed > 0 ? 'err' : 'ok');
+      renderBatch(view);
+    } catch (e) {
+      toast('金标回归失败：' + e.message, 'err');
+      btn.disabled = false; btn.textContent = '执行回归';
+    }
+  };
 }
 
 /* ───────── 启动 ───────── */

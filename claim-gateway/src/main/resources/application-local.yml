@@ -26,6 +26,8 @@ claim:
     enabled: false
   mq:
     enabled: false
+  xxljob:
+    enabled: false   # 零依赖档位无调度中心，日终 cron 由 Spring @Scheduled 兜底
   minio:
     enabled: false
     local-dir: data/evidence

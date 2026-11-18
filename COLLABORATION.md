@@ -33,6 +33,8 @@
 4. **单队列 P0**：所有 activity 注册 claim-main；DESIGN 4.1 六队列物理隔离属 P1 部署拆分（10.5 节如实标注）。
 5. **欺诈评分 P0 为确定性规则评分器**（非模型）；条款检索 P0 无向量库，走规则引擎；支付为模拟 activity + 双账本。
 6. **git 听指令**：提交/推送均须用户明示；不提交 data/logs/密钥。
+7. **默认 mysql 档位**（2026-11-18 用户「数据库切成mysql」）：MySQL claim 库为默认存储，H2 仅 local 零依赖档保留（原 H2 文件留作备份不删）；docker exec 导中文种子必须 `--default-character-set=utf8mb4`。
+8. **批处理调度上 XXL-Job**（2026-11-18 用户「2 上 XXL-Job」+「管理台进 ops 运维工具」）：mysql/default 档由 XXL-Job 2.4.1 调度（中心 Docker :8094 ops-pro 纳管，执行器 claim-pro-executor :9999，图谱 02:30/金标 03:00）；local 档 Spring cron 条件兜底防双调度；启动跑+手动 API 保留；accessToken 双端同值放仓库外。
 
 ## 四、纠正与教训（踩坑 → 规则）
 

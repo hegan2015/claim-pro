@@ -107,8 +107,9 @@ public class ClaimActivitiesImpl implements ClaimActivities {
         PolicySnapshot policy = policy(caseNo);
         String desc = tools.invoke("case.description", caseNo, "{}");
         CoverageDecision d = coverage.evaluate(policy, c.getAccidentDate(), c.getAccidentType(),
-                desc.contains("酒驾") || desc.contains("醉酒"),
-                desc.contains("无证"), desc.contains("故意"));
+                com.qoder.claim.common.rule.DescriptionRules.drunkDriving(desc),
+                com.qoder.claim.common.rule.DescriptionRules.unlicensed(desc),
+                com.qoder.claim.common.rule.DescriptionRules.intentional(desc));
         archive(caseNo, "COVERAGE", toJson(d));
         return d;
     }
@@ -144,15 +145,7 @@ public class ClaimActivitiesImpl implements ClaimActivities {
     @Override
     public Channel route(String caseNo, int riskScore, long estimateCents) {
         ClaimCase c = require(caseNo);
-        Channel ch;
-        if (riskScore >= route.getRiskHigh() || estimateCents > route.getStandardLimitCents()) {
-            ch = Channel.INVESTIGATE;
-        } else if (estimateCents < route.getFastLimitCents() && riskScore < route.getRiskLow()
-                && c.getRecognitionConfidence() >= route.getConfidenceMin()) {
-            ch = Channel.FAST;
-        } else {
-            ch = Channel.STANDARD;
-        }
+        Channel ch = ChannelRouter.route(riskScore, estimateCents, c.getRecognitionConfidence(), route);
         c.setChannel(ch);
         cases.update(c);
         archive(caseNo, "ROUTE", "{\"channel\":\"" + ch + "\",\"risk\":" + riskScore + "}");

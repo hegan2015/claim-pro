@@ -16,23 +16,27 @@
 ## 快速开始
 
 ```bash
-./run.sh          # 默认 local profile：H2 + 本地管道，零中间件可跑
+./run.sh          # 默认 mysql profile：MySQL claim 库 + 本地管道 + XXL-Job 执行器（需 claim-shared-mysql / xxl-job-admin）
+CLAIM_PROFILE=local ./run.sh   # 零依赖档位：H2 + 本地管道，无中间件可跑
 ./stop.sh         # 停止（不删数据）
-python3 smoke-test.py   # 端到端冒烟 14 项（零依赖，需服务已启动）
-./mvnw test       # 单测 17 项
+python3 smoke-test.py   # 端到端冒烟 19 项（零依赖，需服务已启动）
+./mvnw test       # 单测 28 项
 ```
 
-- 工作台：http://127.0.0.1:8097/ （报案/案件库/审批工作台/审计/仪表盘）
+- 工作台：http://127.0.0.1:8097/ （报案/案件库/审批工作台/审计/仪表盘/风控批处理）
 - 健康：`/actuator/health` ｜ 运行时：`/api/runtime`（TEMPORAL 或 LOCAL）
 
-### 两种运行档位
+### 三种运行档位
 
-| 档位 | 启动 | 编排 | 存储 | 适用 |
-|---|---|---|---|---|
-| local（默认） | `./run.sh` | LocalPipelineRunner 同构状态机（启动即告警非生产），重启自动续接等待节点 | H2 + 本地文件系统证据库 + 审计环回 | 无中间件的功能验证/演示 |
-| 生产编排 | `CLAIM_PROFILE=default ./run.sh` | Temporal durable 工作流（跨重启恢复） | MySQL + MinIO + RocketMQ | 中间件由 ops-pro 启动后 |
+| 档位 | 启动 | 编排 | 存储 | 批处理调度 | 适用 |
+|---|---|---|---|---|---|
+| local | `CLAIM_PROFILE=local ./run.sh` | LocalPipelineRunner 同构状态机（启动即告警非生产），重启自动续接等待节点 | H2 + 本地文件系统证据库 + 审计环回 | Spring cron 兜底（零依赖） | 无中间件的功能验证/演示 |
+| mysql（默认） | `./run.sh` | 同上 | **MySQL claim 库**（deploy/mysql DDL+种子）+ 本地证据/事件件 | **XXL-Job**（调度中心 :8094，执行器 :9999） | 有共享 MySQL 的日常开发/演示 |
+| 生产编排 | `CLAIM_PROFILE=default ./run.sh` | Temporal durable 工作流（跨重启恢复） | MySQL + MinIO + RocketMQ | **XXL-Job** | 中间件由 ops-pro 启动后 |
 
-中间件统一由 **ops-pro（:8098）** 的共享 compose 栈管理（Temporal/RocketMQ/MySQL/Redis/MinIO，与 cs-pro 复用同一套），本仓库 `deploy/docker-compose.yml` 为同定义独立备用版。
+H2→MySQL 迁移工具 `deploy/mysql/MigrateH2ToMysql.java`（只读 H2、行数校验、失败回滚），用法见 [OPERATIONS.md §8.1](OPERATIONS.md)。
+
+中间件统一由 **ops-pro（:8098）** 的共享 compose 栈管理（Temporal/RocketMQ/MySQL/Redis/MinIO/ZooKeeper×2/XXL-Job 调度中心，与 cs-pro 复用同一套），本仓库 `deploy/docker-compose.yml` 为同定义独立备用版。图谱构建（每日 02:30）/金标回归（每日 03:00）由 XXL-Job 调度，管理台入口在 ops-pro「运维工具」页，运维详见 [OPERATIONS.md §6](OPERATIONS.md)。
 
 ### AI 能力（可选）
 
@@ -70,12 +74,14 @@ POST /api/claims/{no}/dispute           异议升级人工
 GET  /api/claims/{no}                   详情（案件/材料/审批/事件/双账本）
 GET  /api/claims/{no}/evidence/verify   证据哈希链校验
 POST /api/recon/run                     双账本对账
+POST /api/graph/build · GET /api/graph/summary|case/{no}|history   欺诈关联图谱构建/查询
+POST /api/gold/run · GET /api/gold/latest|history                  金标回归执行/查询
 GET  /api/stats · /api/audit/recent     仪表盘统计 / 审计事件
 ```
 
 ## 验证状态（2026-11-18）
 
-单测 17/17 ｜ 冒烟 14/14 ｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局）｜ 重启恢复实测 ｜ 对账零差异 ｜ 中间件 7/7。
+单测 28/28 ｜ 冒烟 19/19（含图谱构建/邻域+金标 15 案零漂移）｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局、风控批处理页交互）｜ 重启恢复实测 ｜ 对账零差异 ｜ 中间件 7/7 ｜ H2→MySQL 14 表迁移行数校验全 OK（H2 备份保留）。
 逐流程实现详解见 [DESIGN.md §11](DESIGN.md)，P0 与目标架构差异见 [DESIGN.md §10.5](DESIGN.md)（单队列、规则评分器、模拟支付等，如实标注）；需求逐条映射与验收证据见 [REQUIREMENTS.md §4.1/§9](REQUIREMENTS.md)。
 
 ## 约束

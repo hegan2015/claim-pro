@@ -17,9 +17,13 @@ claim.llm.fallback.api-key=sk-xxxxxxxxxxxxxxxx
 # claim.llm.routes.doc-vision.model=deepseek-vl2
 # claim.llm.routes.doc-vision.private-deployment=true
 
-# MySQL（生产 profile）
+# MySQL（mysql/default profile；mysql 为默认档位，账号建议专用 claim，库表见 deploy/mysql/）
+spring.datasource.username=claim
 spring.datasource.password=xxxxxxxx
 
 # MinIO
 claim.minio.access-key=xxxxxxxx
 claim.minio.secret-key=xxxxxxxx
+
+# XXL-Job 执行器（mysql/default 档位；须与 ops-pro 侧 xxljob.access.token 同值）
+claim.xxljob.access-token=REPLACE_WITH_RANDOM_TOKEN

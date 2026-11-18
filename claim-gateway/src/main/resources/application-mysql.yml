@@ -1,0 +1,28 @@
+# MySQL profile：数据源切 MySQL（claim-shared-mysql），编排/事件/证据仍走本地开发件。
+# 库表由 deploy/mysql/001_schema.sql 初始化（sql.init 不自动执行），种子见 002_seed.sql。
+# 账号口令在 ~/.config/claim-pro/claim.properties（spring.datasource.username/password）。
+# XXL-Job 执行器默认启用（base claim.xxljob.enabled=true），调度中心 claim-shared-xxl-job-admin:8094；
+# accessToken 在 ~/.config/claim-pro/claim.properties（claim.xxljob.access-token）。
+spring:
+  web:
+    resources:
+      static-locations: file:./claim-gateway/src/main/resources/static/,classpath:/static/
+      cache:
+        cachecontrol:
+          no-cache: true
+          must-revalidate: true
+  datasource:
+    url: jdbc:mysql://${CLAIM_MYSQL_HOST:127.0.0.1}:${CLAIM_MYSQL_PORT:3306}/claim?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf8
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: never
+
+claim:
+  temporal:
+    enabled: false
+  mq:
+    enabled: false
+  minio:
+    enabled: false
+    local-dir: data/evidence

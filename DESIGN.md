@@ -60,11 +60,11 @@ Agent执行域  无状态 worker 池(K8s HPA 按队列深度)
 | 案件库 | MySQL 8 + ShardingSphere（机构+年份分片） | 与核心系统单向同步 |
 | 缓存/锁 | Redis 7 集群（Redisson） | 敏感字段不落缓存 |
 | 检索 | ES 8 + Milvus | 条款按出险日取版本 |
-| 图谱 | NebulaGraph | T+1 批量+实时增量 |
+| 图谱 | NebulaGraph | T+1 批量+实时增量；P0 关系库存储全量重建（§11.18） |
 | 证据 | MinIO/云 OSS + WORM 合规保留 | 哈希链防篡改 |
 | 规则 | Drools（条款规则包，带生效日期） | 核赔师可参与维护 |
 | 可观测 | OTel + SkyWalking + Prometheus/Grafana + Loki | trace_id 贯通 workflow→agent→工具→模型 |
-| 批处理 | XXL-Job | 日终对账/图谱构建/金标回归 |
+| 批处理 | XXL-Job | 日终对账/图谱构建/金标回归；已落地 XXL-Job 2.4.1 调度中心（Docker :8094，ops-pro 纳管）+ 内嵌执行器 :9999 + 启动跑 + 手动 API；local 档位 Spring cron 兜底（§11.18/§11.19） |
 | 部署 | K8s + Helm；开发/预发 docker-compose | 同城双活，异地质检 |
 | 密钥 | 生产 KMS；开发 `~/.config/claim-pro/`（700/600） | 仓库只留 *.example |
 
@@ -206,6 +206,13 @@ ledger_fund       资金账(渠道维度实收实付)
 pay_outbox        支付本地事务表(幂等键, 状态, 事务消息回查依据)
 recon_diff        对账差异(三层对账结果, 差错处理状态)
 clause_version    条款版本(条款号, 生效区间, 文本, 规则包引用)
+graph_case_shop   案件↔修理厂关联登记(case_no, shop_name, source, ts；报案/定损登记)
+repair_shop_flag  修理厂风险标记(case_no, shop_name, reason, source=MANUAL|GRAPH_BATCH)
+graph_node        图谱节点(node_type CASE/POLICY/SHOP, node_key, props_json, ts)
+graph_edge        图谱边(src/dst type+key, edge_type INSURED_BY/REPAIRED_AT, ts)
+graph_build_run   图谱构建运行(ts, trigger_by, 节点/边/厂数, 新增标记数, 耗时)
+gold_run          金标回归运行(ts, trigger_by, total/passed/failed, 耗时)
+gold_case_result  金标逐案结果(run_id, gold_id, passed, mismatches_json)
 ```
 
 分片：claim_* 按机构+年份；账本按机构。审计事件 RocketMQ→数仓保留≥10 年，本地 outbox 副本滚动 90 天。
@@ -258,7 +265,14 @@ K8s + Helm：每类 agent 独立 Deployment（HPA 按 Task Queue 深度）；Tem
 
 ### 10.4 本机开发约束（如实标注，2026-11-18 现状）
 
-本机已装 Docker Desktop（引擎 29.9.3/Compose 5.7.0）：中间件统一由 **ops-pro（8098）** 的 claim-shared compose 栈管理，**7/7 RUNNING**（Temporal/RocketMQ×3/MySQL/Redis/MinIO），claim-pro 与 cs-pro 共用。MinIO 社区版上游已停止预编译分发，镜像由 **GitHub 源码多阶段构建**（配方 ops-pro/deploy/minio-from-source.Dockerfile，S3 往返实测通过）。应用编译用 mvnw；无中间件时以 `CLAIM_PROFILE=local` 启动：H2 + 本地文件系统证据库 + LocalLogEventPublisher（审计环回）+ LocalPipelineRunner（本地开发管道），启动即告警非生产编排。DeepSeek 联调需 `~/.config/claim-pro/` 配置 Key，未配置时 AI 端点 503、流程走人工降级通道。local 档位静态资源从源码目录热加载且强制 `Cache-Control: no-cache, must-revalidate`（防浏览器缓存旧样式）。
+本机已装 Docker Desktop（引擎 29.9.3/Compose 5.7.0）：中间件统一由 **ops-pro（8098）** 的 claim-shared compose 栈管理（Temporal/RocketMQ×3/MySQL/Redis/MinIO/ZooKeeper×2/**XXL-Job 调度中心 :8094**），claim-pro 与 cs-pro 共用 MySQL/RocketMQ/Redis。MinIO 社区版上游已停止预编译分发，镜像由 **GitHub 源码多阶段构建**（配方 ops-pro/deploy/minio-from-source.Dockerfile，S3 往返实测通过）。应用编译用 mvnw。
+
+**三档 profile（2026-11-18 起默认 mysql）**：
+- `local`：零依赖开发，H2 文件库 + 本地文件系统证据库 + LocalLogEventPublisher + LocalPipelineRunner；
+- `mysql`（默认）：**MySQL claim 库**（claim-shared-mysql，专用账号 claim，口令 `~/.config/claim-pro/claim.properties`）+ 本地编排/事件/证据件 + **XXL-Job 执行器**（调度中心 claim-shared-xxl-job-admin :8094，accessToken 同文件）；库表由 `deploy/mysql/001_schema.sql` 初始化（20 表，`sql.init.mode=never`），种子 `002_seed.sql`；H2→MySQL 一次性迁移工具 `deploy/mysql/MigrateH2ToMysql.java`（H2 只读、逐表行数校验、失败回滚，原 H2 文件保留作备份）；
+- `default`：全栈生产档位，Temporal/RocketMQ/MinIO 全启用，须由 ops-pro 先起中间件。
+
+无中间件时以 `CLAIM_PROFILE=local` 启动，启动即告警非生产编排。DeepSeek 联调需 `~/.config/claim-pro/` 配置 Key，未配置时 AI 端点 503、流程走人工降级通道。local/mysql 档位静态资源从源码目录热加载且强制 `Cache-Control: no-cache, must-revalidate`（防浏览器缓存旧样式）。
 
 ### 10.5 P0 实现简化清单（与目标架构的差异，如实标注）
 
@@ -270,7 +284,10 @@ K8s + Helm：每类 agent 独立 Deployment（HPA 按 Task Queue 深度）；Tem
 - **理算草案双跑**：P0 仅计算器单跑，F6 LLM 草案与双跑比对监控属 P1；
 - **支付**：P0 为模拟支付 activity + 双账本落库（事务消息链路代码完整，local 无 MQ 时直连账本），真实渠道对接属 P1；
 - **条款检索**：P0 无向量库，核保走确定性规则引擎（免责条款表）；
-- **复核**：P0 review agent 为按需 API（详情页「AI 复核」），未嵌入主流程强制门禁，F7 质疑自动触发深查属 P1。
+- **复核**：P0 review agent 为按需 API（详情页「AI 复核」），未嵌入主流程强制门禁，F7 质疑自动触发深查属 P1；
+- **批处理调度**：mysql/default 档位已接 **XXL-Job 2.4.1**（调度中心 Docker :8094，执行器 claim-pro-executor :9999，图谱 02:30 / 金标 03:00，trigger_by=XXL_JOB）；local 零依赖档位由 Spring `@Scheduled` 兜底（`claim.batch.*-cron` 可配，条件装配防双调度）；启动各跑一次 + 手动 API 保留，失败不阻断主链路；XXL-Job 分片广播属 P1（§11.18/§11.19）；
+- **图谱存储**：P0 节点/边落关系库（graph_node/graph_edge）T+1 全量重建，修理厂关联来自 graph_case_shop 登记；生产 NebulaGraph + 实时增量属 P1；标记规则与回写语义不变；
+- **金标集规模**：P0 为 15 条核赔师标注案（gold-cases.json，覆盖三通道/三类法定免责/责任比例/限额/免赔/审批分级），纯代码重放不触碰 LLM；生产 ≥2000 案 + 影子双跑属 P1。
 
 ## 11. 业务流程设计详解（P0 实现，as-built）
 
@@ -569,7 +586,7 @@ PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + �
 
 ### 11.17 前端工作台交互设计
 
-**设计方案**：单文件 SPA（原生 JS，零构建依赖），hash 路由五视图：**仪表盘 / 报案登记 / 案件列表 / 人工工作台 / 审计追溯**；案件详情六页签：材料 / 决策时间线 / 人工审批 / 双账本 / 工具审计 / 客户通知。设计语言墨蓝×青碧，通道四色语义（FAST 琥珀/STANDARD 电蓝/INVESTIGATE 玫红/MANUAL 紫罗兰）。
+**设计方案**：单文件 SPA（原生 JS，零构建依赖），hash 路由六视图：**仪表盘 / 报案登记 / 案件列表 / 人工工作台 / 审计追溯 / 风控批处理**；案件详情六页签：材料 / 决策时间线 / 人工审批 / 双账本 / 工具审计 / 客户通知。设计语言墨蓝×青碧，通道四色语义（FAST 琥珀/STANDARD 电蓝/INVESTIGATE 玫红/MANUAL 紫罗兰）。
 
 **关键纪律**：
 - **轮询纪律**：仪表盘 15s / 工作台 8s / 详情 3s；路由切换 stopPoll() 清定时器，输入框聚焦暂停刷新防打断；
@@ -580,15 +597,61 @@ PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + �
 
 **实现**：claim-gateway/src/main/resources/static/（index.html/app.js/style.css）。
 
+### 11.18 欺诈关联图谱构建（T+1 批处理，as-built）
+
+**目标**：把「案件—保单—修理厂」关联沉淀为可查询图谱，按确定性规则聚合修理厂风险并回写标记，供 `graph.flagged` 工具→欺诈评分（+30）→分级路由闭环消费。
+
+**数据语义（两表分职）**：
+- `graph_case_shop`：案件↔修理厂**关联登记**（报案/定损录入，source=INTAKE），只表达「这台车在这家厂修」；
+- `repair_shop_flag`：**风险标记登记表**，source 二态——`MANUAL`（人工调查标记，永久保留）/ `GRAPH_BATCH`（批处理自动标记，重建即清）。`graph.flagged` 工具按 case_no 计数，语义不变。
+
+**构建流程**（GraphBuildService.build，全量重建、源数据只读）：
+1. 读 claim_case / policy_snapshot / graph_case_shop / repair_shop_flag；
+2. 清空 graph_edge / graph_node，重插 CASE 节点（props: status/estimateCents/riskScore）、POLICY 节点、SHOP 节点，INSURED_BY / REPAIRED_AT 边（关联去重）；
+3. 按厂聚合：关联案件数、高额案件数（估损 > ¥50,000，与欺诈评分大额档一致）、累计估损；
+4. **标记规则**：同厂 ≥3 案 或 ≥2 笔高额案 → 该厂关联案件逐案回写 GRAPH_BATCH 标记；已有 MANUAL 标记的案件跳过（人工优先）；
+5. 落 graph_build_run（触发方/节点/边/厂数/新增标记/耗时）。
+
+**幂等与保留**：重建只清 GRAPH_BATCH 行与派生图表，MANUAL 标记永不丢失；重复构建结果一致（单测验证）。
+
+**查询**：summary（最近运行+全厂风险表）、neighbourhood(caseNo)（自身+保单/修理厂一跳+同厂兄弟案，欺诈调查视角）、history（最近 20 次）。
+
+**调度**：mysql/default 档位由 **XXL-Job** 接管——任务 `graphBuildJobHandler`（BEAN，CRON `0 30 2 * * ?`，FIRST 路由/串行阻塞/失败重试 1 次），执行器组 claim-pro-executor 自动注册（executor-ip=host.docker.internal 供容器回调宿主）；local 档位 Spring `@Scheduled` 兜底（`claim.batch.graph-cron`，条件装配防双调度）。启动跑一次（STARTUP）+ `POST /api/graph/build`（MANUAL）保留；runQuietly 失败只记日志不阻断主链路，XXL-Job 侧失败 handleFail 落调度日志。
+
+**生产差异**：图存储同步 NebulaGraph、实时增量边、XXL-Job 分片广播多执行器；标记规则与回写语义不变。
+
+**实现**：claim-gateway/.../batch/GraphBuildService.java、BatchScheduler.java、BatchJobHandlers.java、XxlJobConfig.java、BatchController.java；单测 GraphBuildServiceTest 4/4（建图/标记派生、幂等+人工保留、摘要风险、邻域兄弟案）。
+
+### 11.19 金标回归（确定性核心重放，as-built）
+
+**目标**：核赔师标注的期望裁决作为金标，任何规则/计算器/评分器/阈值改动导致裁决偏离即报红——发布门禁的 P0 形态。
+
+**金标集**：`gold-cases.json` 15 案（GOLD-001~015），覆盖：三通道分级、三类法定免责（酒驾/无证/故意）+ 期间外/险种不符、责任比例（次要 30/同等 50/主要 70）、保单限额封顶、免赔额吞没、历史出险加分封顶、标记厂阻断快赔边界、大额双人审批。期望值全部手算并经单测验证。
+
+**重放纪律**：纯代码逐案重放 核保→欺诈评分→分级→理算→审批数，**不触碰 LLM、不写业务表**；与生产管道共用单一事实源（DescriptionRules 责任/免责关键词、ChannelRouter 阈值纯函数、CoverageRuleEngine/FraudScorer/ClaimCalculator/ApprovalPolicy），杜绝「重放一套、生产一套」。
+
+**比对**：逐字段比对期望裁决（Number 按 longValue 归一），漂移落 gold_run / gold_case_result（mismatches_json 含字段/期望/实际）。拒赔案只比对 covered/exclusions/payableCents=0。
+
+**调度**：mysql/default 档位由 **XXL-Job** 接管——任务 `goldRegressionJobHandler`（BEAN，CRON `0 0 3 * * ?`，漂移 >0 案即 handleFail 报红调度日志，不盲目重试）；local 档位 Spring cron 兜底（`claim.batch.gold-cron`）。启动跑一次 + `POST /api/gold/run` 保留；查询 latest/history。前端「风控批处理」页展示通过率、逐案结果与漂移明细；仪表盘金标状态行。
+
+**漂移检测验证**：单测篡改期望值（GOLD-001 金额/GOLD-002 通道）→ 精确报红 2 案；改路由阈值（fastLimitCents）→ 批量报红。
+
+**生产差异**：金标库扩充 ≥2000 案、影子双跑 2–4 周（§9 发布流水线）；XXL-Job 日终调度已落地。
+
+**实现**：claim-gateway/.../batch/GoldRegressionService.java、GoldCase.java、gold-cases.json；单测 GoldRegressionTest 3/3。
+
 ## 12. 验证结果（2026-11-18）
 
 | 项 | 结果 |
 |---|---|
-| 单元测试 `./mvnw test` | 17/17（脱敏/计算器/双账本幂等/审批分级/核保规则） |
-| 端到端冒烟 `smoke-test.py` | 14/14（报案→补件→决策→结案→双账本→事件链→证据链→审计→对账零差异→统计） |
-| 浏览器闭环实测 | 报案→补件→审批/驳回→结案、异议升级、AI 503 降级、移动布局 |
+| 单元测试 `./mvnw test` | 28/28（脱敏/模型网关/计算器/双账本幂等/审批分级/核保规则/描述规则 2/图谱构建 4/金标回归 3） |
+| 端到端冒烟 `smoke-test.py` | 19/19（报案→补件→决策→结案→双账本→事件链→证据链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归 15 案零漂移/逐案结果） |
+| 浏览器闭环实测 | 报案→补件→审批/驳回→结案、异议升级、AI 503 降级、移动布局；风控批处理页渲染+立即构建/执行回归交互（mysql 档位） |
 | 重启恢复 | local 管道等待节点续接实测通过 |
-| 中间件 | ops-pro claim-shared 栈 7/7 RUNNING；MinIO 源码构建 + S3 建桶/传/读/删往返实测 |
-| 事务消息回查演练 | 属生产档位验证项（§11 验证计划 3），local 无 MQ 不涉及 |
+| MySQL 切库 | 14 表 H2→MySQL 迁移逐表行数校验全 OK（16 案/129 证据/133 决策），H2 文件只读保留作备份；20 表 DDL+种子；专用账号 claim；切库后冒烟 19/19、证据链校验通过 |
+| 金标漂移检测 | 篡改期望值精确报红 2 案；改路由阈值批量报红（单测验证） |
+| XXL-Job 调度 | 调度中心 2.4.1（Docker :8094，ops-pro 纳管）登录验证；执行器 claim-pro-executor :9999 自动注册心跳入库；两任务（02:30/03:00）手动触发 trigger/handle 均 200，graph_build_run/gold_run 落 trigger_by=XXL_JOB 行（金标 15/15）；local 档位 Spring cron 条件兜底防双调度 |
+| 中间件 | ops-pro claim-shared 栈全 RUNNING（含 XXL-Job 调度中心）；MinIO 源码构建 + S3 建桶/传/读/删往返实测 |
+| 事务消息回查演练 | 属生产档位验证项（§11 验证计划 3），local/mysql 无 MQ 不涉及 |
 
 验证计划（生产档位）：compose 起基础设施 → 冒烟全链路 → kill 进程半消息回查补 COMMIT → Temporal 断点续跑 → 断模型端点纯人工降级演练 → 金标集回归。

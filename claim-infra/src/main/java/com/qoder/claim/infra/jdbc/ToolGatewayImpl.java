@@ -123,17 +123,7 @@ public class ToolGatewayImpl implements ToolGateway {
     }
 
     private String liabilityPercent(String caseNo) {
-        String desc = caseDescription(caseNo);
-        if (desc.contains("次要责任")) {
-            return "30";
-        }
-        if (desc.contains("同等责任")) {
-            return "50";
-        }
-        if (desc.contains("主要责任")) {
-            return "70";
-        }
-        return "100";
+        return String.valueOf(com.qoder.claim.common.rule.DescriptionRules.liabilityPercent(caseDescription(caseNo)));
     }
 
     private String coreRegister(String caseNo) {

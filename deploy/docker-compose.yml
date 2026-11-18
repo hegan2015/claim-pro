@@ -81,6 +81,18 @@ services:
     volumes:
       - claim-shared-minio:/data
 
+  # 调度库 xxl_job 需先手工初始化（DDL：ops-pro/deploy/xxl-job/tables_xxl_job.sql）并建 xxljob 账号
+  xxl-job-admin:
+    image: xuxueli/xxl-job-admin:2.4.1
+    ports:
+      - "127.0.0.1:8094:8080"
+    environment:
+      - "PARAMS=--spring.datasource.url=jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=Asia/Shanghai --spring.datasource.username=xxljob --spring.datasource.password=${XXL_JOB_DB_PASSWORD:-ClaimShared_2026} --xxl.job.accessToken=${XXL_JOB_ACCESS_TOKEN:-default_token}"
+    depends_on:
+      - mysql
+    volumes:
+      - claim-shared-xxl-job-admin:/data/applogs
+
 volumes:
   claim-shared-temporal:
   claim-shared-namesrv:
@@ -88,3 +100,4 @@ volumes:
   claim-shared-mysql:
   claim-shared-redis:
   claim-shared-minio:
+  claim-shared-xxl-job-admin:

@@ -38,8 +38,13 @@ MERGE INTO claim_material(id, material_id, case_no, type, storage_key, sha256, c
 (11, 'CLM-20261118-0006-M-01', 'CLM-20261118-0006', 'ACCIDENT_REPORT', 'seed/0006-report.pdf', 'seedhash11', 0.91),
 (12, 'CLM-20261118-0006-M-02', 'CLM-20261118-0006', 'DAMAGE_PHOTO', 'seed/0006-photo.jpg', 'seedhash12', 0.89);
 
-MERGE INTO repair_shop_flag(id, case_no, shop_name, reason) KEY(id) VALUES
-(1, 'CLM-20261118-0003', '宏达汽修', '近90天3起同类高额案件，图谱关联同一账户');
+MERGE INTO repair_shop_flag(id, case_no, shop_name, reason, source) KEY(id) VALUES
+(1, 'CLM-20261118-0003', '宏达汽修', '近90天3起同类高额案件，图谱关联同一账户', 'MANUAL');
+
+MERGE INTO graph_case_shop(id, case_no, shop_name, source, ts) KEY(id) VALUES
+(1, 'CLM-20261118-0003', '宏达汽修', 'INTAKE', 1794988800000),
+(2, 'CLM-20261118-0002', '宏达汽修', 'INTAKE', 1794996000000),
+(3, 'CLM-20261118-0004', '宏达汽修', 'INTAKE', 1795000000000);
 
 MERGE INTO claim_approval(id, case_no, step, operator, approved, comment, amount_cents, ts) KEY(id) VALUES
 (1, 'CLM-20261117-0005', 'REJECT_CONFIRM', '核赔师-王敏', 1, '酒驾免责条款成立，确认拒赔', 0, 1794913200000);

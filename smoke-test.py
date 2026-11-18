@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """claim-pro 端到端冒烟（零依赖，python3 smoke-test.py [base_url]）。
 
-覆盖：健康→报案→补件→管道推进→人工节点决策→结案→双账本→证据链→审计→对账。
-默认打 http://127.0.0.1:8097（run.sh 启动的 local profile）。
+覆盖：健康→报案→补件→管道推进→人工节点决策→结案→双账本→证据链→审计→对账→图谱构建→金标回归。
+默认打 http://127.0.0.1:8097（run.sh 启动的 mysql profile）。
 """
 import json
 import sys
@@ -66,8 +66,9 @@ def main():
         for _ in range(3):
             req("POST", "/api/claims/%s/decision" % case_no,
                 {"step": "APPROVE", "approved": True, "operator": "smoke", "comment": "冒烟审批通过"})
-            status, detail = wait_status(case_no, {"CLOSED", "REJECTED", "APPROVING"}, timeout=20)
-            if status != "APPROVING":
+            # 只等终结态：APPROVING 在目标集里会立即返回，赶不上管道 2s 轮询消费审批
+            status, detail = wait_status(case_no, {"CLOSED", "REJECTED"}, timeout=20)
+            if status in ("CLOSED", "REJECTED"):
                 break
     elif status == "MANUAL":
         amount = (detail or {}).get("case", {}).get("estimateCents") or 360000
@@ -99,6 +100,26 @@ def main():
 
     stats = req("GET", "/api/stats")
     check("统计接口", stats.get("totalCases", 0) > 0 and stats.get("paidCents", 0) > 0, stats)
+
+    # ── 风控批处理：图谱构建 + 金标回归 ──
+    gb = req("POST", "/api/graph/build")
+    check("图谱构建（节点/边/修理厂）",
+          gb.get("nodeCount", 0) > 0 and gb.get("edgeCount", 0) > 0 and gb.get("shopCount", 0) >= 1, gb)
+    gs = req("GET", "/api/graph/summary")
+    flagged = [s for s in gs.get("shops", []) if s.get("flagged")]
+    check("图谱摘要含标记修理厂（人工标记保留）",
+          len(flagged) >= 1 and gs.get("manualFlagCount", 0) >= 1, gs)
+    nb = req("GET", "/api/graph/case/CLM-20261118-0002")
+    check("案件邻域含同厂兄弟案",
+          nb.get("center") == "CLM-20261118-0002" and len(nb.get("nodes", [])) > 1, nb)
+    gr = req("POST", "/api/gold/run")
+    check("金标回归全过（15 案零漂移）",
+          gr.get("total", 0) > 0 and gr.get("failed") == 0 and gr.get("passed") == gr.get("total"), gr)
+    gl = req("GET", "/api/gold/latest")
+    results = gl.get("results", [])
+    check("金标逐案结果齐全",
+          len(results) == gr.get("total") and all(r.get("passed", r.get("PASSED")) in (1, True) for r in results),
+          {"count": len(results)})
 
     print("\n%d/%d 通过" % (len(PASSED), len(PASSED) + len(FAILED)))
     sys.exit(1 if FAILED else 0)
