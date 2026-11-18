@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS claim_material (
     storage_key VARCHAR(256),
     sha256 VARCHAR(64),
     confidence DOUBLE DEFAULT 0,
+    file_name VARCHAR(256),
+    content_type VARCHAR(128),
+    size_bytes BIGINT,
     INDEX idx_material_case (case_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

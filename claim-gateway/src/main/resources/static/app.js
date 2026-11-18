@@ -516,33 +516,48 @@ async function renderDetail(caseNo, silent = false) {
           <span class="mc ${hasReport ? 'ok' : 'no'}">${hasReport ? '✓' : '○'} 事故认定书</span>
           <span class="mc ${hasPhoto ? 'ok' : 'no'}">${hasPhoto ? '✓' : '○'} 损伤照片</span>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>类型</th><th>存储键</th><th>SHA-256</th><th>识别置信度</th></tr></thead><tbody>
-          ${materials.map(m => `<tr><td>${matLab(m.type)}</td><td class="mono small muted">${esc(m.storageKey || '')}</td>
+        <div class="table-wrap"><table><thead><tr><th>类型</th><th>文件</th><th>SHA-256</th><th>识别置信度</th><th>查看</th></tr></thead><tbody>
+          ${materials.map(m => {
+            const hasFile = m.sizeBytes != null && m.sizeBytes > 0;
+            const url = `/api/claims/${c.caseNo}/materials/${esc(m.materialId)}/content`;
+            const isImg = hasFile && (m.contentType || '').startsWith('image/');
+            const size = hasFile ? (m.sizeBytes >= 1048576 ? (m.sizeBytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(m.sizeBytes / 1024)) + ' KB') : '';
+            return `<tr><td>${matLab(m.type)}</td>
+            <td class="small">${hasFile ? `${esc(m.fileName || m.materialId)} <span class="faint mono">${size}</span>` : `<span class="faint" title="${esc(m.storageKey || '')}">仅登记（无文件）</span>`}</td>
             <td class="mono small faint" title="${esc(m.sha256 || '')}">${esc((m.sha256 || '').slice(0, 16))}…</td>
-            <td class="mono small">${m.confidence ? pct(m.confidence) : '—'}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty"><em>▣</em>暂无材料</div></td></tr>'}
+            <td class="mono small">${m.confidence ? pct(m.confidence) : '—'}</td>
+            <td>${hasFile ? `<span class="row" style="gap:8px">${isImg ? `<a href="${url}" target="_blank" rel="noopener" title="点击查看原图"><img class="mat-thumb" src="${url}" alt="${esc(m.fileName || '材料')}" loading="lazy"></a>` : ''}<a href="${url}" target="_blank" rel="noopener">查看</a></span>` : '<span class="faint">—</span>'}</td></tr>`;
+          }).join('') || '<tr><td colspan="5"><div class="empty"><em>▣</em>暂无材料</div></td></tr>'}
         </tbody></table></div>
         ${!TERMINAL.has(c.status) ? `
         <h3 class="mt">补充材料</h3>
         <form id="matForm" class="row">
           <select name="type" style="width:auto">${MAT_TYPES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-          <input type="text" name="storageKey" placeholder="存储键，如 uploads/${esc(c.caseNo)}-photo.jpg" style="flex:1;min-width:200px" required>
+          <input type="file" name="file" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" style="flex:1;min-width:220px" required>
           <input type="number" name="confidence" placeholder="置信度 0~1" step="0.01" min="0" max="1" style="width:120px">
-          <button class="btn primary sm" type="submit">上传登记</button>
+          <button class="btn primary sm" type="submit">上传文件</button>
           <button class="btn sm ghost" type="button" id="quickMat">一键补齐门禁材料</button>
-        </form>` : '<p class="hint mt">案件已终结，材料归档只读。</p>'}
+        </form>
+        <p class="hint">选择文件上传后可在线查看（SHA-256 按文件内容计算）；「一键补齐」为演示元数据登记，无文件本体。</p>` : '<p class="hint mt">案件已终结，材料归档只读。</p>'}
       </div>`;
       const mf = $('#matForm');
       if (mf) {
         mf.onsubmit = async e => {
           e.preventDefault();
           const f = e.target;
+          const file = f.file.files[0];
+          if (!file) return toast('请选择文件', 'err');
+          const fd = new FormData();
+          fd.append('file', file);
+          fd.append('type', f.type.value);
+          fd.append('confidence', String(Number(f.confidence.value) || 0.9));
           try {
-            await api(`/claims/${c.caseNo}/materials`, {
-              method: 'POST', body: [{ type: f.type.value, storageKey: f.storageKey.value.trim(), confidence: Number(f.confidence.value) || 0.9 }],
-            });
-            toast('材料已登记，哈希已计算', 'ok');
+            const res = await fetch(`/api/claims/${c.caseNo}/materials/upload`, { method: 'POST', body: fd });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+            toast('文件已上传，哈希已按内容计算', 'ok');
             renderDetail(c.caseNo, true);
-          } catch (err) { toast('材料登记失败：' + err.message, 'err'); }
+          } catch (err) { toast('材料上传失败：' + err.message, 'err'); }
         };
         $('#quickMat').onclick = async () => {
           const batch = [];

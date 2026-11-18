@@ -27,7 +27,7 @@
 cd claim-pro
 ./run.sh                    # 默认 mysql profile：MySQL claim 库 + 本地管道（需 claim-shared-mysql 运行中）
 # 就绪后打开 http://127.0.0.1:8097/
-python3 smoke-test.py       # 端到端冒烟 19 项（可选，验证全链路+批处理）
+python3 smoke-test.py       # 端到端冒烟 24 项（可选，验证全链路+材料文件+批处理）
 ./stop.sh                   # 停止服务（不删数据）
 ```
 
@@ -78,7 +78,7 @@ python3 smoke-test.py       # 端到端冒烟 19 项（可选，验证全链路+
 概览区：状态/通道/估损/应赔/风险评分/识别置信度/时间戳；操作按钮：**证据链校验**（哈希链防篡改验证）、**AI 复核**（503 降级）、**异议升级**（弹窗填理由 → 案件转人工）。
 
 六个页签：
-- **材料**：已提交单证列表（类型/存储键/SHA-256/置信度）。
+- **材料**：单证列表（类型/文件/SHA-256/置信度/查看）。真实上传的文件显示文件名+大小，图片带缩略图，「查看」新标签页打开原文件（读回复核 SHA-256）；仅元数据登记的显示「仅登记（无文件）」。「补充材料」表单选择文件上传（jpg/jpeg/png/gif/webp/pdf ≤20MB，SHA-256 按文件内容计算）；「一键补齐门禁材料」为演示元数据登记，无文件本体。
 - **决策时间线**：全链路事件（REPORT/COVERAGE/FRAUD_SCORE/ASSESS/ROUTE/CALC/APPROVE/PAY/CORE_REGISTER/NOTIFY…），每步带输入输出 JSON、模型 token 计量。
 - **人工审批**：审批记录（步骤/操作人/结论/意见/金额）。
 - **双账本**：业务账本（事件驱动）与资金账本（OUT 赔付）逐笔对照。
@@ -277,6 +277,7 @@ docker exec -i claim-shared-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --defaul
 ```
 
 - 迁移覆盖 14 张业务表（案件/材料/审批/双账本/outbox/证据索引/决策/审计/核心登记等）；派生图表（graph_*）与金标表由启动批处理重建，不迁移。
+- 存量库增量 DDL：`deploy/mysql/003_material_files.sql`（claim_material 补 file_name/content_type/size_bytes 三列，材料文件上传能力；新环境 001 已含，003 只跑一次）。
 - H2 快照无 `graph_case_shop` 表时工具自动 SKIP，由种子补齐。
 - **H2 文件原样保留作备份**（data/claim.mv.db），删除须先经负责人确认。
 - 实测：16 案/129 证据/133 决策全量迁移行数校验 OK，切库后冒烟 19/19。
@@ -286,11 +287,11 @@ docker exec -i claim-shared-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --defaul
 ```bash
 cd claim-pro
 ./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?     # 单测 28 项（脱敏/网关/计算器/双账本审批/核保/描述规则/图谱/金标）
-python3 smoke-test.py                            # 冒烟 19 项，需服务已启动
+python3 smoke-test.py                            # 冒烟 24 项，需服务已启动
 python3 smoke-test.py http://127.0.0.1:8097      # 显式指定地址
 ```
 
-冒烟覆盖：健康→运行时→报案建案→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归零漂移/逐案结果。
+冒烟覆盖：健康→运行时→报案建案→材料文件上传/读回校验/仅登记与非法扩展名拒绝→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归零漂移/逐案结果。
 
 批处理手工验证：
 
@@ -357,7 +358,9 @@ XXL-Job 调度验证（mysql 档位）：管理台「执行一次」两任务（
 POST /api/claims                          报案（同步建案，返回案件行）
 GET  /api/claims?status=&channel=&limit=  案件列表
 GET  /api/claims/{no}                     详情（案件/材料/审批/事件/双账本）
-POST /api/claims/{no}/materials           补件（数组：type/storageKey/confidence）
+POST /api/claims/{no}/materials           补件元数据登记（数组：type/storageKey/confidence）
+POST /api/claims/{no}/materials/upload    真实文件上传（multipart：file/type/confidence）
+GET  /api/claims/{no}/materials/{mid}/content  材料文件查看（仅登记材料 404）
 POST /api/claims/{no}/decision            人工决策（step/approved/operator/comment/amountCents）
 POST /api/claims/{no}/dispute             异议升级（reason）
 GET  /api/claims/{no}/evidence/verify     证据哈希链校验

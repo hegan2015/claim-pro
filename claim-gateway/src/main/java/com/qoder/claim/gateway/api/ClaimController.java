@@ -10,9 +10,16 @@ import com.qoder.claim.infra.jdbc.JdbcCaseRepository;
 import com.qoder.claim.workflow.LocalPipelineRunner;
 import com.qoder.claim.workflow.WorkflowStarter;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -69,6 +76,31 @@ public class ClaimController {
     public Map<String, Object> materials(@PathVariable String caseNo, @RequestBody List<Material> batch) {
         service.submitMaterials(caseNo, batch);
         return Map.of("ok", true, "count", batch.size());
+    }
+
+    @PostMapping("/claims/{caseNo}/materials/upload")
+    public Material uploadMaterial(@PathVariable String caseNo,
+                                   @RequestParam("file") MultipartFile file,
+                                   @RequestParam("type") String type,
+                                   @RequestParam(value = "confidence", defaultValue = "0") double confidence) throws IOException {
+        return service.uploadMaterial(caseNo, type, confidence, file.getOriginalFilename(), file.getBytes());
+    }
+
+    @GetMapping("/claims/{caseNo}/materials/{materialId}/content")
+    public ResponseEntity<byte[]> materialContent(@PathVariable String caseNo, @PathVariable String materialId) {
+        CaseService.MaterialFile f = service.readMaterial(caseNo, materialId);
+        MediaType mediaType;
+        try {
+            mediaType = MediaType.parseMediaType(f.material().getContentType());
+        } catch (Exception e) {
+            mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        }
+        String filename = f.material().getFileName() == null ? materialId : f.material().getFileName();
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.inline().filename(filename, StandardCharsets.UTF_8).build().toString())
+                .body(f.bytes());
     }
 
     @PostMapping("/claims/{caseNo}/decision")

@@ -24,8 +24,16 @@ CREATE TABLE IF NOT EXISTS claim_material (
     type VARCHAR(32),
     storage_key VARCHAR(256),
     sha256 VARCHAR(64),
-    confidence DOUBLE DEFAULT 0
+    confidence DOUBLE DEFAULT 0,
+    file_name VARCHAR(256),
+    content_type VARCHAR(128),
+    size_bytes BIGINT
 );
+
+-- 存量 H2 文件库补列（新建库幂等）
+ALTER TABLE claim_material ADD COLUMN IF NOT EXISTS file_name VARCHAR(256);
+ALTER TABLE claim_material ADD COLUMN IF NOT EXISTS content_type VARCHAR(128);
+ALTER TABLE claim_material ADD COLUMN IF NOT EXISTS size_bytes BIGINT;
 
 CREATE TABLE IF NOT EXISTS claim_approval (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,

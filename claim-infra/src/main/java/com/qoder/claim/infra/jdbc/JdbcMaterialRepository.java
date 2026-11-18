@@ -21,6 +21,10 @@ public class JdbcMaterialRepository implements MaterialRepository {
         m.setStorageKey(rs.getString("storage_key"));
         m.setSha256(rs.getString("sha256"));
         m.setConfidence(rs.getDouble("confidence"));
+        m.setFileName(rs.getString("file_name"));
+        m.setContentType(rs.getString("content_type"));
+        long size = rs.getLong("size_bytes");
+        m.setSizeBytes(rs.wasNull() ? null : size);
         return m;
     };
 
@@ -30,8 +34,10 @@ public class JdbcMaterialRepository implements MaterialRepository {
 
     @Override
     public void save(Material m) {
-        jdbc.update("INSERT INTO claim_material(material_id, case_no, type, storage_key, sha256, confidence) VALUES(?,?,?,?,?,?)",
-                m.getMaterialId(), m.getCaseNo(), m.getType(), m.getStorageKey(), m.getSha256(), m.getConfidence());
+        jdbc.update("INSERT INTO claim_material(material_id, case_no, type, storage_key, sha256, confidence, file_name, content_type, size_bytes) " +
+                        "VALUES(?,?,?,?,?,?,?,?,?)",
+                m.getMaterialId(), m.getCaseNo(), m.getType(), m.getStorageKey(), m.getSha256(), m.getConfidence(),
+                m.getFileName(), m.getContentType(), m.getSizeBytes());
     }
 
     @Override

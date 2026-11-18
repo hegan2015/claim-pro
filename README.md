@@ -68,7 +68,9 @@ chmod 600 ~/.config/claim-pro/claim.properties   # 填入 DeepSeek Key
 
 ```
 POST /api/claims                        报案（同步建案）
-POST /api/claims/{no}/materials         补件（ACCIDENT_REPORT + DAMAGE_PHOTO 齐套推进）
+POST /api/claims/{no}/materials         补件元数据登记（ACCIDENT_REPORT + DAMAGE_PHOTO 齐套推进）
+POST /api/claims/{no}/materials/upload  真实文件上传（multipart：file/type/confidence；jpg/jpeg/png/gif/webp/pdf ≤20MB）
+GET  /api/claims/{no}/materials/{mid}/content   材料文件查看（读回复核 SHA-256；仅登记材料返回 404）
 POST /api/claims/{no}/decision          人工决策（APPROVE / REJECT_CONFIRM / MANUAL_HANDLE）
 POST /api/claims/{no}/dispute           异议升级人工
 GET  /api/claims/{no}                   详情（案件/材料/审批/事件/双账本）
@@ -81,7 +83,7 @@ GET  /api/stats · /api/audit/recent     仪表盘统计 / 审计事件
 
 ## 验证状态（2026-11-18）
 
-单测 28/28 ｜ 冒烟 19/19（含图谱构建/邻域+金标 15 案零漂移）｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局、风控批处理页交互）｜ 重启恢复实测 ｜ 对账零差异 ｜ 中间件 7/7 ｜ H2→MySQL 14 表迁移行数校验全 OK（H2 备份保留）。
+单测 28/28 ｜ 冒烟 24/24（含材料文件上传/读回/仅登记拒绝 + 图谱构建/邻域 + 金标 15 案零漂移）｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局、风控批处理页交互、材料文件上传→缩略图→查看）｜ 材料存储双形态实测（本地磁盘 + MinIO 各 24/24）｜ 重启恢复实测 ｜ 对账零差异 ｜ H2→MySQL 14 表迁移行数校验全 OK（H2 备份保留）。
 逐流程实现详解见 [DESIGN.md §11](DESIGN.md)，P0 与目标架构差异见 [DESIGN.md §10.5](DESIGN.md)（单队列、规则评分器、模拟支付等，如实标注）；需求逐条映射与验收证据见 [REQUIREMENTS.md §4.1/§9](REQUIREMENTS.md)。
 
 ## 约束

@@ -196,7 +196,7 @@ ReviewAgent agent = AiServices.builder(ReviewAgent.class)
 
 ```
 claim_case        案件主数据(case_no PK, 状态, 通道, 机构, 险种, 出险日, 金额, 风险分)
-claim_material    材料(material_id, case_no, 类型, 对象存储键, 哈希, 置信度)
+claim_material    材料(material_id, case_no, 类型, 对象存储键, 哈希, 置信度, 文件名, MIME, 字节数)
 claim_evidence    证据快照(evidence_id, case_no, step, input_hash, output_ref,
                   model_version, prompt_version, ts)  → WORM 对象存储
 claim_decision    决策事件(与 RocketMQ 事件同构, 本地 outbox 副本)
@@ -349,12 +349,19 @@ PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + �
 **流程**：
 1. 管道检查 `materialsComplete`：存在 ACCIDENT_REPORT（事故认定书）**且** DAMAGE_PHOTO（损伤照片）两类材料；
 2. 不齐 → 状态 MATERIALS_PENDING，生产 `Workflow.await(补件signal || 异议)`，本地 2s 轮询（30 分钟窗口）；
-3. 客户/工作台补件 `POST /api/claims/{no}/materials`：逐件生成 materialId（案件号-M-XXXXXX）、计算 SHA-256（对 storageKey）、落 claim_material；生产随即发 signal，本地由轮询自然发现；
+3. 客户/工作台补件两条通道：
+   - **真实文件上传** `POST /api/claims/{no}/materials/upload`（multipart）：白名单扩展名 jpg/jpeg/png/gif/webp/pdf（≤20MB），MIME 一律由扩展名推导（不信任客户端声明，防内容类型伪装）；字节进 MaterialFileStore，SHA-256 按**文件内容**计算，file_name/content_type/size_bytes 落 claim_material；
+   - **元数据登记** `POST /api/claims/{no}/materials`（JSON 数组）：生成 materialId、SHA-256 对 storageKey 计算、size_bytes 为 NULL（演示/存量通道，「一键补齐门禁材料」走此路）；
+   两通道均落 claim_material 后发 signal（本地由轮询自然发现）；
 4. 齐套 → 管道续跑核保；
 5. 等待期间客户异议 → 直接升级 MANUAL（见 §11.11）。
 
-**实现**：ClaimActivitiesImpl.materialsComplete:97、CaseService.submitMaterials:74、ClaimWorkflowImpl:44-52。
-**生产差异**：F2 识别 agent 对上传影像做 OCR+结构化+置信度（<0.85 转人工录入）；P0 材料为登记制（类型+存储键+哈希），识别属 P1。工作台提供「一键补件（认定书+照片）」演示入口。
+**材料查看**：`GET /api/claims/{no}/materials/{mid}/content` 读回文件字节，**复核 SHA-256 与登记一致**（不一致报 503 疑似篡改），按登记 MIME inline 返回；仅登记材料（size_bytes NULL）返回 404。工作台材料页签：真实文件显示文件名+大小、图片缩略图、「查看」新标签页打开；仅登记标记「仅登记（无文件）」。
+
+**材料文件存储**：MaterialFileStore 端口两实现，与证据链共用 `claim.minio.enabled` 开关——MinioMaterialFileStore（生产，claim-evidence 桶 `materials/{caseNo}/{materialId}` 键空间，与证据快照同桶不同前缀）/ LocalMaterialFileStore（开发，data/evidence/materials/…，对象键归一化防越界）。**注意**：文件跟随存储后端，切换 minio 开关后旧模式上传的文件不在新模式存储里（读取报 503），生产切换须迁移对象。
+
+**实现**：ClaimActivitiesImpl.materialsComplete:97、CaseService.submitMaterials/uploadMaterial/readMaterial、ClaimController 上传/查看端点、claim-infra/minio/*MaterialFileStore、ClaimWorkflowImpl:44-52。
+**生产差异**：F2 识别 agent 对上传影像做 OCR+结构化+置信度（<0.85 转人工录入）属 P1；P0 已支持真实文件上传+在线查看+内容哈希防篡改，影像**识别**（从图片提取受损部件）尚未接入，定损仍读描述文字。
 
 ### 11.3 核保校验（条款规则引擎）
 

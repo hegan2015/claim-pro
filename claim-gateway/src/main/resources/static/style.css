@@ -254,6 +254,7 @@ details.json pre{margin-top:7px;padding:11px 13px;background:rgba(7,12,24,.8);bo
 .mat-check .mc{display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 11px;border-radius:20px;border:1px solid var(--line)}
 .mat-check .mc.ok{color:var(--green);border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.08)}
 .mat-check .mc.no{color:var(--warn);border-color:rgba(251,191,36,.35)}
+.mat-thumb{height:40px;max-width:64px;object-fit:cover;border-radius:6px;border:1px solid var(--line);vertical-align:middle;display:block}
 .chat-box{display:flex;flex-direction:column;gap:10px;max-height:300px;overflow-y:auto;padding:4px}
 .bubble{max-width:82%;padding:9px 13px;border-radius:13px;font-size:13px;line-height:1.55}
 .bubble.user{align-self:flex-end;background:rgba(13,148,136,.3);border:1px solid var(--line-strong);border-bottom-right-radius:4px}

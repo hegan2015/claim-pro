@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """claim-pro 端到端冒烟（零依赖，python3 smoke-test.py [base_url]）。
 
-覆盖：健康→报案→补件→管道推进→人工节点决策→结案→双账本→证据链→审计→对账→图谱构建→金标回归。
+覆盖：健康→报案→材料文件上传/查看→补件→管道推进→人工节点决策→结案→双账本→证据链→审计→对账→图谱构建→金标回归。
 默认打 http://127.0.0.1:8097（run.sh 启动的 mysql profile）。
 """
+import base64
+import hashlib
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8097").rstrip("/")
 PASSED, FAILED = [], []
@@ -25,6 +28,40 @@ def req(method, path, body=None):
 def check(name, cond, extra=""):
     (PASSED if cond else FAILED).append(name)
     print(("PASS " if cond else "FAIL ") + name + ((" | " + str(extra)) if extra and not cond else ""))
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+
+def upload_file(case_no, filename, data, mtype, confidence=0.95):
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, value in (("type", mtype), ("confidence", str(confidence))):
+        parts.append(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n'
+                      % (boundary, name, value)).encode())
+    parts.append(('--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
+                  'Content-Type: application/octet-stream\r\n\r\n' % (boundary, filename)).encode())
+    parts.append(data)
+    parts.append(('\r\n--%s--\r\n' % boundary).encode())
+    r = urllib.request.Request(BASE + "/api/claims/%s/materials/upload" % case_no,
+                               data=b"".join(parts), method="POST",
+                               headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
+    with urllib.request.urlopen(r, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def raw_get(path):
+    with urllib.request.urlopen(BASE + path, timeout=15) as resp:
+        return resp.headers.get("Content-Type", ""), resp.read()
+
+
+def expect_http_error(method, path, code, body=None):
+    try:
+        req(method, path, body)
+        return False
+    except urllib.error.HTTPError as e:
+        return e.code == code
 
 
 def wait_status(case_no, targets, timeout=60):
@@ -54,10 +91,29 @@ def main():
     check("报案建案同步返回", bool(case_no) and case.get("status") == "REPORTED", case)
     print("     caseNo=" + case_no)
 
+    # ── 材料文件本体：真实上传 → 读回校验 → 仅登记/非法格式拒绝 ──
+    up = upload_file(case_no, "smoke-photo.png", PNG_1X1, "DAMAGE_PHOTO")
+    check("真实文件上传（内容 SHA-256 + 字节数）",
+          up.get("sha256") == hashlib.sha256(PNG_1X1).hexdigest()
+          and up.get("sizeBytes") == len(PNG_1X1) and up.get("fileName") == "smoke-photo.png", up)
+    ct, content = raw_get("/api/claims/%s/materials/%s/content" % (case_no, up["materialId"]))
+    check("文件内容读回一致", content == PNG_1X1, {"bytes": len(content)})
+    check("Content-Type 正确", ct.startswith("image/png"), ct)
+
     req("POST", "/api/claims/%s/materials" % case_no, [
-        {"type": "ACCIDENT_REPORT", "storageKey": "smoke/%s/report.pdf" % case_no, "confidence": 0.98},
-        {"type": "DAMAGE_PHOTO", "storageKey": "smoke/%s/photo.jpg" % case_no, "confidence": 0.95}])
-    check("补件提交", True)
+        {"type": "ACCIDENT_REPORT", "storageKey": "smoke/%s/report.pdf" % case_no, "confidence": 0.98}])
+    check("补件提交（元数据登记）", True)
+    detail0 = req("GET", "/api/claims/" + case_no)
+    meta_only = [m for m in detail0["materials"] if m.get("sizeBytes") is None]
+    check("仅登记材料无文件本体（404）",
+          bool(meta_only) and expect_http_error(
+              "GET", "/api/claims/%s/materials/%s/content" % (case_no, meta_only[0]["materialId"]), 404))
+    try:
+        upload_file(case_no, "evil.txt", b"not an image", "OTHER")
+        bad_ext_rejected = False
+    except urllib.error.HTTPError as e:
+        bad_ext_rejected = e.code == 404
+    check("不支持的扩展名拒绝", bad_ext_rejected)
 
     status, detail = wait_status(case_no, {"APPROVING", "MANUAL", "CLOSED", "REJECTED"})
     check("管道推进出等待/终结态", status in ("APPROVING", "MANUAL", "CLOSED", "REJECTED"), status)
