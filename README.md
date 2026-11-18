@@ -2,7 +2,7 @@
 
 保险公司车险理赔多智能体工作台：**agent 承担理解/查证/起草/沟通，资格判定、金额、审批与资金归确定性核心，流程走向归 Temporal**。Java 21 + Spring Boot 3.2 + LangChain4j 1.0.1 + Temporal + RocketMQ，Maven 十模块，配套理赔工作台 SPA 与运维控制台 ops-pro。
 
-> 新会话/新成员请先读 [COLLABORATION.md](COLLABORATION.md)（用户指导要点与已拍板决策），再读 [REQUIREMENTS.md](REQUIREMENTS.md) 与 [DESIGN.md](DESIGN.md)。
+> 新会话/新成员请先读 [COLLABORATION.md](COLLABORATION.md)（用户指导要点与已拍板决策），再读 [REQUIREMENTS.md](REQUIREMENTS.md) 与 [DESIGN.md](DESIGN.md)。日常使用与运维见 [OPERATIONS.md](OPERATIONS.md)（操作手册：工作台操作/业务规则/启停/中间件/故障排查）。
 
 ## 快速开始
 

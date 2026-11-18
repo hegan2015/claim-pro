@@ -287,6 +287,7 @@ details.json pre{margin-top:7px;padding:11px 13px;background:rgba(7,12,24,.8);bo
 @keyframes toastIn{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}
 @keyframes toastOut{to{opacity:0;transform:translateX(30px)}}
 .modal-scrim{position:fixed;inset:0;z-index:90;background:rgba(4,8,18,.72);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease}
+.modal-scrim[hidden]{display:none}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .modal{width:min(560px,94vw);max-height:86vh;overflow-y:auto;background:linear-gradient(160deg,var(--ink-3),var(--ink-2));border:1px solid var(--line-strong);border-radius:var(--r-lg);box-shadow:var(--shadow);padding:24px;animation:rise .25s ease}
 .modal h3{margin-bottom:16px;font-size:16px}
