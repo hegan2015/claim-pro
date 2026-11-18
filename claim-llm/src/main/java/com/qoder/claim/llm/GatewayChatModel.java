@@ -1,6 +1,5 @@
 package com.qoder.claim.llm;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
@@ -9,9 +8,16 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.internal.Json;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
+import dev.langchain4j.model.chat.request.json.JsonEnumSchema;
+import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
+import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.TokenUsage;
@@ -122,15 +128,49 @@ public class GatewayChatModel implements ChatModel {
             Map<String, Object> fn = new LinkedHashMap<>();
             fn.put("name", s.name());
             fn.put("description", s.description() == null ? "" : s.description());
-            try {
-                String paramsJson = Json.toJson(s.parameters());
-                fn.put("parameters", mapper.readValue(paramsJson, new TypeReference<Map<String, Object>>() {
-                }));
-            } catch (Exception e) {
-                fn.put("parameters", Map.of("type", "object", "properties", Map.of()));
-            }
+            // 不用框架内部 Json.toJson：它会丢 type 字段并混入 null/definitions，DeepSeek 严格校验直接 400
+            fn.put("parameters", s.parameters() == null
+                    ? Map.of("type", "object", "properties", Map.of())
+                    : schemaToWire(s.parameters()));
             out.add(Map.of("type", "function", "function", fn));
         }
         return out;
+    }
+
+    private static Map<String, Object> schemaToWire(JsonSchemaElement el) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (el instanceof JsonObjectSchema o) {
+            m.put("type", "object");
+            if (o.description() != null) m.put("description", o.description());
+            Map<String, Object> props = new LinkedHashMap<>();
+            if (o.properties() != null) {
+                o.properties().forEach((k, v) -> props.put(k, schemaToWire(v)));
+            }
+            m.put("properties", props);
+            if (o.required() != null && !o.required().isEmpty()) m.put("required", o.required());
+        } else if (el instanceof JsonStringSchema s) {
+            m.put("type", "string");
+            if (s.description() != null) m.put("description", s.description());
+        } else if (el instanceof JsonIntegerSchema s) {
+            m.put("type", "integer");
+            if (s.description() != null) m.put("description", s.description());
+        } else if (el instanceof JsonNumberSchema s) {
+            m.put("type", "number");
+            if (s.description() != null) m.put("description", s.description());
+        } else if (el instanceof JsonBooleanSchema s) {
+            m.put("type", "boolean");
+            if (s.description() != null) m.put("description", s.description());
+        } else if (el instanceof JsonEnumSchema s) {
+            m.put("type", "string");
+            m.put("enum", s.enumValues());
+            if (s.description() != null) m.put("description", s.description());
+        } else if (el instanceof JsonArraySchema a) {
+            m.put("type", "array");
+            if (a.description() != null) m.put("description", a.description());
+            if (a.items() != null) m.put("items", schemaToWire(a.items()));
+        } else {
+            throw new IllegalArgumentException("不支持的工具参数类型: " + el.getClass().getSimpleName());
+        }
+        return m;
     }
 }
