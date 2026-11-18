@@ -2,7 +2,16 @@
 
 保险公司车险理赔多智能体工作台：**agent 承担理解/查证/起草/沟通，资格判定、金额、审批与资金归确定性核心，流程走向归 Temporal**。Java 21 + Spring Boot 3.2 + LangChain4j 1.0.1 + Temporal + RocketMQ，Maven 十模块，配套理赔工作台 SPA 与运维控制台 ops-pro。
 
-> 新会话/新成员请先读 [COLLABORATION.md](COLLABORATION.md)（用户指导要点与已拍板决策），再读 [REQUIREMENTS.md](REQUIREMENTS.md) 与 [DESIGN.md](DESIGN.md)。日常使用与运维见 [OPERATIONS.md](OPERATIONS.md)（操作手册：工作台操作/业务规则/启停/中间件/故障排查）。
+> 新会话/新成员请先读 [COLLABORATION.md](COLLABORATION.md)（用户指导要点与已拍板决策）。
+
+### 文档地图
+
+| 文档 | 职责 | 适合谁 |
+|---|---|---|
+| [REQUIREMENTS.md](REQUIREMENTS.md) v1.1.0 | 业务目标/8 agent 职责与权力边界/流程分级/资金与非功能需求；**§4.1 需求→实现映射、§9 P0 验收记录** | 产品/核赔/验收 |
+| [DESIGN.md](DESIGN.md) v1.1.0 | 目标商用架构（§1–9）+ 工程部署（§10）+ **§11 逐业务流程设计详解（as-built：报案/补件/核保/反欺诈∥定损/路由/理算/审批/支付双账本/拒赔/人工降级/对账/证据链/双网关/重启恢复/前端）** + §12 验证结果 | 架构/开发 |
+| [OPERATIONS.md](OPERATIONS.md) | 操作手册：工作台操作/业务规则字典/启停运维/中间件与 MinIO 源码重建/AI 配置/故障排查 | 使用/运维 |
+| [COLLABORATION.md](COLLABORATION.md) | 用户指导时间线/已拍板决策/踩坑教训/协作原则 | 新会话/新成员 |
 
 ## 快速开始
 
@@ -66,7 +75,8 @@ GET  /api/stats · /api/audit/recent     仪表盘统计 / 审计事件
 
 ## 验证状态（2026-11-18）
 
-单测 17/17 ｜ 冒烟 14/14 ｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局）｜ 重启恢复实测。P0 与目标架构的差异见 [DESIGN.md §10.5](DESIGN.md)（单队列、规则评分器、模拟支付等，如实标注）。
+单测 17/17 ｜ 冒烟 14/14 ｜ 浏览器闭环实测（报案→补件→审批/驳回→结案、异议升级、AI 降级、移动布局）｜ 重启恢复实测 ｜ 对账零差异 ｜ 中间件 7/7。
+逐流程实现详解见 [DESIGN.md §11](DESIGN.md)，P0 与目标架构差异见 [DESIGN.md §10.5](DESIGN.md)（单队列、规则评分器、模拟支付等，如实标注）；需求逐条映射与验收证据见 [REQUIREMENTS.md §4.1/§9](REQUIREMENTS.md)。
 
 ## 约束
 

@@ -2,13 +2,16 @@
 # 仓库内禁止出现真实密钥。
 
 # DeepSeek（官方 OpenAI 兼容端点；官方模型 ID ≠ 第三方平台 ID）
+# 生效条件：base-url + model + api-key 三者齐全，缺一项该端点视为未配置。
+# 最简配置：只填 fallback 三行，六类 agent 全部走它；按 agent 覆盖时同样三行齐全。
+claim.llm.fallback.base-url=https://api.deepseek.com/v1
+claim.llm.fallback.model=deepseek-chat
 claim.llm.fallback.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.intake.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.notify.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.coverage-explain.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.assess.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.review.api-key=sk-xxxxxxxxxxxxxxxx
-claim.llm.routes.fraud-report.api-key=sk-xxxxxxxxxxxxxxxx
+# 按 agent 类型覆盖（可选；不配则走 fallback）：
+# claim.llm.routes.intake.base-url=https://api.deepseek.com/v1
+# claim.llm.routes.intake.model=deepseek-chat
+# claim.llm.routes.intake.api-key=sk-xxxxxxxxxxxxxxxx
+# claim.llm.routes.notify.* / coverage-explain.* / assess.* / review.* / fraud-report.* 同上
 # 私有化视觉端点（影像不出域）示例：
 # claim.llm.routes.doc-vision.base-url=http://vlm.internal:8000/v1
 # claim.llm.routes.doc-vision.model=deepseek-vl2

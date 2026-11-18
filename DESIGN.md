@@ -1,7 +1,10 @@
 # claim-pro 设计文档（DESIGN）
 
-版本：v1.0.0 ｜ 日期：2026-11-18 ｜ 状态：定稿（与 REQUIREMENTS.md v1.0.0 配套）
+版本：v1.1.0 ｜ 日期：2026-11-18 ｜ 状态：定稿（与 REQUIREMENTS.md v1.1.0 配套）
 口径：**商用生产架构**（非本地内置版）；消息层 **RocketMQ**（替代 Kafka）；编排 Temporal；agent 框架 LangChain4j；主力模型 DeepSeek。
+v1.1.0 变更：新增 §11 业务流程设计详解（P0 实现如实描述，含每条流程的设计方案/步骤/实现位置/与生产差异）、§12 验证结果；§10.4/10.5 对齐当前交付现状。
+
+**文档地图**：[REQUIREMENTS](REQUIREMENTS.md)（需求与验收映射）· **DESIGN**（本文：目标架构 + 实现详解）· [OPERATIONS](OPERATIONS.md)（操作手册）· [COLLABORATION](COLLABORATION.md)（协作决策复盘）· [README](README.md)（入口与快速开始）
 
 ---
 
@@ -220,13 +223,13 @@ clause_version    条款版本(条款号, 生效区间, 文本, 规则包引用)
 
 ```
 claim-pro/
-├── REQUIREMENTS.md / DESIGN.md
+├── REQUIREMENTS.md / DESIGN.md / OPERATIONS.md / COLLABORATION.md / README.md
 ├── claim-common          # 案件模型/幂等键/审计事件/端口接口
 ├── claim-llm             # 模型网关客户端 + GatewayChatModel + 路由/脱敏/计量
 ├── claim-agent-runtime   # AiServices 装配/工具注册/Guardrails/记忆
-├── claim-agents          # 8 agent 接口与 @Tool 工具集
+├── claim-agents          # agent 接口与 @Tool 工具集（P0 六门面，见 §11.15）
 ├── claim-core            # 规则引擎/理算计算器/审批/双账本（LLM 禁入）
-├── claim-workflow        # Temporal workflow/activity 定义与 worker
+├── claim-workflow        # Temporal workflow/activity 定义与 worker + 本地开发管道
 ├── claim-mq              # RocketMQ 事件发布/事务消息/消费者
 ├── claim-infra           # MySQL/Redis/ES/Milvus/MinIO/图谱 适配器
 ├── claim-gateway         # 工具网关 + 开放 API（Spring Boot 主应用, 端口 8097）
@@ -253,24 +256,339 @@ ES/Milvus/NebulaGraph 属 P1+ 阶段，届时追加；P0 条款检索可先 MySQ
 
 K8s + Helm：每类 agent 独立 Deployment（HPA 按 Task Queue 深度）；Temporal/RocketMQ/MySQL 同城双活；模型网关多副本；私有 vLLM GPU 池独立命名空间。RPO≈0（半同步复制）、RTO<30min。
 
-### 10.4 本机开发约束（如实标注）
+### 10.4 本机开发约束（如实标注，2026-11-18 现状）
 
-本机已装 Docker Desktop：中间件统一由 ops-pro（8098）的 claim-shared compose 栈管理（Temporal/RocketMQ/MySQL/Redis/MinIO），claim-pro 与 cs-pro 共用。应用编译用 mvnw；无中间件时以 `CLAIM_PROFILE=local` 启动：H2 + 本地文件系统证据库 + LocalLogEventPublisher（审计环回）+ LocalPipelineRunner（本地开发管道），启动即告警非生产编排。DeepSeek 联调需 `~/.config/claim-pro/llm.properties` 配置 Key，未配置时 AI 端点 503、流程走人工降级通道。
+本机已装 Docker Desktop（引擎 29.9.3/Compose 5.7.0）：中间件统一由 **ops-pro（8098）** 的 claim-shared compose 栈管理，**7/7 RUNNING**（Temporal/RocketMQ×3/MySQL/Redis/MinIO），claim-pro 与 cs-pro 共用。MinIO 社区版上游已停止预编译分发，镜像由 **GitHub 源码多阶段构建**（配方 ops-pro/deploy/minio-from-source.Dockerfile，S3 往返实测通过）。应用编译用 mvnw；无中间件时以 `CLAIM_PROFILE=local` 启动：H2 + 本地文件系统证据库 + LocalLogEventPublisher（审计环回）+ LocalPipelineRunner（本地开发管道），启动即告警非生产编排。DeepSeek 联调需 `~/.config/claim-pro/` 配置 Key，未配置时 AI 端点 503、流程走人工降级通道。local 档位静态资源从源码目录热加载且强制 `Cache-Control: no-cache, must-revalidate`（防浏览器缓存旧样式）。
 
 ### 10.5 P0 实现简化清单（与目标架构的差异，如实标注）
 
 - **单 Task Queue**：P0 所有 activity 注册在 `claim-main` 单队列，4.1 的六队列物理隔离属 P1 部署拆分；
-- **本地开发管道**：`claim.temporal.enabled=false` 时由 LocalPipelineRunner 以同构状态机跑流程，人工节点轮询 claim_approval 表代替 signal；重启后经 ApplicationReadyEvent 按案件状态续接等待节点（REPORTED/MATERIALS_PENDING/APPROVING/MANUAL），其余中间态告警不自动续接——生产一律 Temporal durable 恢复，无此限制；
-- **欺诈评分**：P0 为确定性规则评分器（金额/历史/材料一致性加权），非模型推理；反欺诈 agent 仅做报告汇总；
-- **报案结构化**：P0 为关键词事实提取 + LLM 可选增强，LLM 不可用时降级关键词结果；
-- **支付**：P0 为模拟支付 activity + 双账本落库，真实渠道对接属 P1；
-- **条款检索**：P0 无向量库，核保走确定性规则引擎（免责条款表）。
+- **本地开发管道**：`claim.temporal.enabled=false` 时由 LocalPipelineRunner 以同构状态机跑流程，人工节点轮询 claim_approval 表（2s）代替 signal，等待窗口 30 分钟；重启后经 ApplicationReadyEvent 按案件状态续接等待节点（REPORTED/MATERIALS_PENDING/APPROVING/MANUAL），其余中间态告警不自动续接——生产一律 Temporal durable 恢复，无此限制（详见 §11.16）；
+- **欺诈评分**：P0 为确定性规则评分器（金额/历史/修理厂标记/深夜报案加权，§11.4），非模型推理；反欺诈 agent 仅做报告汇总；
+- **报案结构化**：P0 为表单直填 + 可选 LLM 结构化增强（`/api/agent/intake`，503 降级不影响建案）；关键词提取用于确定性核心的免责事由与责任比例判定（§11.3/§11.6），非 LLM 职责；
+- **识别置信度**：P0 定损后固定置 0.9（无独立识别模型），生产由 F2 识别模型输出真实置信度并执行 <0.85 转人工；
+- **理算草案双跑**：P0 仅计算器单跑，F6 LLM 草案与双跑比对监控属 P1；
+- **支付**：P0 为模拟支付 activity + 双账本落库（事务消息链路代码完整，local 无 MQ 时直连账本），真实渠道对接属 P1；
+- **条款检索**：P0 无向量库，核保走确定性规则引擎（免责条款表）；
+- **复核**：P0 review agent 为按需 API（详情页「AI 复核」），未嵌入主流程强制门禁，F7 质疑自动触发深查属 P1。
 
-## 11. 验证计划
+## 11. 业务流程设计详解（P0 实现，as-built）
 
-1. `./mvnw verify`：全模块编译+单测（规则引擎/计算器/双账本/幂等/路由/脱敏）；
-2. compose 起基础设施 → run.sh 启动 → 冒烟：报案→补件→核保→定损→理算→审批→支付模拟→结案；
-3. 事务消息回查演练（kill 进程后半消息回查补 COMMIT）；
-4. 重启断点恢复（workflow 续跑）；证据哈希链校验；
-5. 降级演练（断模型端点 → 纯人工通道）；
-6. 金标集回归脚本（llm-eval 模式升级）。
+> 本节按代码如实描述每条业务流程的**设计方案、执行步骤、实现位置与生产差异**。
+> 总原则贯穿所有流程：**状态迁移只由编排代码决定；金额只由计算器/人工决策决定；agent 输出只作建议与解释；每一步都落决策事件 + 证据哈希链。**
+
+### 11.0 主流程总览与状态机
+
+```
+报案 POST /api/claims（同步建案，API 返回前案件行必存在）
+  │
+  ▼
+材料齐套门禁 ─不齐→ MATERIALS_PENDING（等补件 signal / 本地 2s 轮询）
+  │齐（认定书+照片）        └─ 期间客户异议 → MANUAL
+  ▼
+COVERAGE_CHECK  规则引擎核保
+  ├─免责→ APPROVING（拒赔确认节点）─人工确认→ REJECTED + 通知
+  │                              └─未确认/异议→ MANUAL
+  ▼属保险责任
+ASSESSING  反欺诈评分 ∥ 定损（并行）
+  │任一失败（模型/识别不可用）→ MANUAL（显式降级，归档原因）
+  ▼
+ROUTE  分级路由（risk × 金额 × 置信度）
+  ├─ INVESTIGATE / MANUAL → MANUAL（SIU 调查 / 人工处理）
+  ▼ FAST / STANDARD
+CALCULATE  理算计算器（纯代码）
+  ▼
+APPROVING  分级审批（FAST 免人工；任一驳回 → REJECTED + 通知）
+  ▼ 批准数达标
+PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + 通知 → CLOSED
+```
+
+**状态字典（12 态）**：REPORTED 已报案 / MATERIALS_PENDING 待补件 / COVERAGE_CHECK 核保中 / ASSESSING 定损中 / ROUTED 已分级 / CALCULATED 已理算 / APPROVING 审批中 / PAYING 支付中 / SETTLED 已赔付 / REJECTED 已拒赔 / MANUAL 人工处理 / CLOSED 已结案。
+**通道字典（4 色）**：FAST 快赔 / STANDARD 标准 / INVESTIGATE 调查 / MANUAL 人工。
+
+**双编排同构**：同一套 activity（ClaimActivitiesImpl）被两种编排驱动——生产 `ClaimWorkflowImpl`（Temporal，signal+durable await）与本地 `LocalPipelineRunner`（线程池状态机，轮询 claim_approval 表）。业务规则只写一份在 activity/核心域，编排层只做「等待与迁移」，保证两档位行为一致。
+
+实现：claim-workflow/ClaimWorkflowImpl.java、LocalPipelineRunner.java、ClaimActivitiesImpl.java。
+
+### 11.1 报案受理（FNOL）
+
+**设计方案**：报案是资金链路的起点，必须「API 返回即有案」——同步建案消除竞态（避免返回案件号后查不到行），编排启动异步化。案件号全局唯一可追溯；LLM 结构化是**可选增强**而非前置依赖，未配 Key 不阻塞立案。
+
+**流程**：
+1. 前端表单提交：保单号/险种（默认 AUTO）/出险日（默认今天）/事故类型/描述；机构默认 HEAD；
+2. `CaseService.report()` 生成案件号 `CLM-YYYYMMDD-XXXXXX`（UUID 前 6 位大写）；
+3. 编排启动：Temporal `WorkflowStarter.start()`（workflowId=案件号）或本地 `LocalPipelineRunner.start()`；两者都**先同步 createCase**；
+4. `createCase` activity 幂等：案件已存在直接返回（Temporal activity 重试安全）；落 claim_case（REPORTED）+ 归档 REPORT 证据；
+5. API 返回案件行；管道异步进入材料门禁。
+6. 可选：`POST /api/agent/intake` 调受理 agent 把口语描述转结构化 JSON（accidentType/location/requiredMaterials，不确定填 null 不得编造）；端点不可用返回 503，前端提示降级，不影响报案。
+
+**实现**：claim-gateway/api/CaseService.java:48、ClaimActivitiesImpl.createCase、claim-agents/IntakeAgent.java。
+**生产差异**：渠道侧加 API 网关 OAuth2+mTLS；受理 agent 支持对话式多轮 FNOL（P0 为单轮表单+可选结构化）。
+
+### 11.2 材料补件与齐套门禁
+
+**设计方案**：材料是核保/定损的证据基础，齐套判定是**确定性规则**（两类单证齐全），不由模型判断。补件是人工节点：生产用 signal 唤醒，本地用轮询发现，门禁循环可多次往返。
+
+**流程**：
+1. 管道检查 `materialsComplete`：存在 ACCIDENT_REPORT（事故认定书）**且** DAMAGE_PHOTO（损伤照片）两类材料；
+2. 不齐 → 状态 MATERIALS_PENDING，生产 `Workflow.await(补件signal || 异议)`，本地 2s 轮询（30 分钟窗口）；
+3. 客户/工作台补件 `POST /api/claims/{no}/materials`：逐件生成 materialId（案件号-M-XXXXXX）、计算 SHA-256（对 storageKey）、落 claim_material；生产随即发 signal，本地由轮询自然发现；
+4. 齐套 → 管道续跑核保；
+5. 等待期间客户异议 → 直接升级 MANUAL（见 §11.11）。
+
+**实现**：ClaimActivitiesImpl.materialsComplete:97、CaseService.submitMaterials:74、ClaimWorkflowImpl:44-52。
+**生产差异**：F2 识别 agent 对上传影像做 OCR+结构化+置信度（<0.85 转人工录入）；P0 材料为登记制（类型+存储键+哈希），识别属 P1。工作台提供「一键补件（认定书+照片）」演示入口。
+
+### 11.3 核保校验（条款规则引擎）
+
+**设计方案**：拒赔是最高风险动作，**判定权 100% 归确定性规则引擎**，LLM 只做判定结果的条款解释（F3）。规则按「保单有效期 → 承保类型 → 法定免责」顺序短路求值，输出命中条款/免责项/解释键，全部可引用、可回放。免责事由从案件描述做关键词提取（酒驾/醉酒、无证、故意），这是确定性文本规则而非模型推理。
+
+**流程**：
+1. 状态 COVERAGE_CHECK；经工具网关 `policy.query` 加载保单快照（有效期/承保类型/限额/免赔/折旧/条款版本）；
+2. `CoverageRuleEngine.evaluate()` 依次判定：
+   - 出险日不在保单有效期 → 免责 `EXCL-PERIOD`；
+   - 事故类型不在承保类型 → 免责 `EXCL-TYPE`；
+   - 酒驾/醉酒 → `EXCL-DRUNK`；无证 → `EXCL-UNLICENSED`；故意 → `EXCL-INTENTIONAL`（可叠加）；
+   - 通过则命中 `CLAUSE-PERIOD-OK` + `CLAUSE-TYPE-OK`；
+3. 归档 COVERAGE 决策（covered/命中条款/免责项）；
+4. **不属保险责任** → 状态 APPROVING，进入**拒赔人工确认节点**（§11.10）——规则引擎说了不算，人确认了才算；
+5. 属保险责任 → 进入并行评估（§11.4）。
+6. 可选：`POST /api/agent/coverage-explain` 把判定 JSON 翻译成客户可读条款解释（引用条款原文，不得自行判定）。
+
+**实现**：claim-core/rule/CoverageRuleEngine.java、ClaimActivitiesImpl.coverageCheck:105。
+**生产差异**：内置规则替换为 Drools 规则包适配器（按出险日取条款版本，核赔师可维护），接口不变；免责事由识别由 F2 结构化字段供给而非关键词。
+
+### 11.4 反欺诈评分 ∥ 定损（并行节点）
+
+**设计方案**：两个互不依赖的评估并行执行缩短时效。**欺诈打分是确定性评分器（非 LLM）**——可解释、可年度验证；agent 只消费分数出报告。定损 agent 的价格**必须来自价格库工具**，不得生成价格（工具 schema 里明文约束）。任一节点失败（模型熔断/不可用）→ 显式降级 MANUAL，绝不带病推进。
+
+**流程**：
+1. 状态 ASSESSING；生产 `Async.function` 并行两 activity，本地顺序执行（同构语义）；
+2. **反欺诈评分** `fraudScore`：经工具网关取 `history.count`（同保单历史已结案件数）、`graph.flagged`（修理厂黑名单标记）；深夜报案=报案时刻<6 点；`FraudScorer.score()` 加权：
+   | 因子 | 分值 |
+   |---|---|
+   | 估损 > ¥50,000 | +25 |
+   | 估损 > ¥10,000（≤5万） | +10 |
+   | 历史赔案次数 ×10 | 封顶 +30 |
+   | 修理厂被标记 | +30 |
+   | 深夜报案（<6 点） | +10 |
+   总分封顶 100，写回案件 riskScore，归档 FRAUD_SCORE；
+3. **定损** `assess`：组装上下文（案件+材料+保单快照）→ 定损 agent（LangChain4j AiServices + AssessTools）；工具 `parts.price` 按车型+配件名查 part_price 表，返回 priceCents + priceSourceId（证据引用），库中无此配件返回错误而非编造；产出维修清单+估价，写回 estimateCents；P0 识别置信度固定 0.9（如实标注，见 §10.5）；归档 ASSESS；
+4. 任一 activity 失败（ActivityFailure/AgentUnavailableException）→ `toManual("模型/识别服务不可用，降级人工通道")`；
+5. 可选：`POST /api/agent/fraud-report` 把分数+线索汇总成调查报告（只汇总，不打分不定性不处置）。
+
+**实现**：ClaimWorkflowImpl:71-82、ClaimActivitiesImpl.fraudScore:117/assess:131、claim-core/fraud/FraudScorer.java、claim-agents/tools/AssessTools.java。
+**生产差异**：评分器替换 XGBoost(JPMML)+NebulaGraph 图特征适配器（接口不变）；定损接入私有 VL 影像模型（不出域）+OCR 前置；置信度真实化并执行 <0.85 转人工。
+
+### 11.5 分级路由（三通道 + 人工）
+
+**设计方案**：路由是「风险×金额×置信度」的确定性门禁，阈值全部配置化（`claim.route.*`，生产接配置中心可调）。设计意图：小额低风险高置信全自动省人力；大额高风险强制人工调查守渗漏；中间地带自动理算+人工审批制衡。
+
+**流程**（`route()`，判定顺序不可交换）：
+1. `riskScore ≥ 70` **或** `估损 > ¥50,000` → **INVESTIGATE**（SIU 人工调查，agent 报告辅助）；
+2. 否则 `估损 < ¥5,000` **且** `riskScore < 30` **且** `识别置信度 ≥ 0.85` → **FAST**（全自动，免人工审批）；
+3. 其余 → **STANDARD**（自动理算 + 人工审批）；
+4. 写回案件 channel，归档 ROUTE；状态 ROUTED；
+5. INVESTIGATE/MANUAL → 转人工通道（§11.11）；FAST/STANDARD 继续理算；路由后若已收到异议 signal 同样升级人工。
+
+**阈值默认值**（RouteProperties，单位分）：fastLimitCents=5000_00、standardLimitCents=50_000_00、riskLow=30、riskHigh=70、confidenceMin=0.85。
+
+**实现**：ClaimActivitiesImpl.route:145、claim-workflow/RouteProperties.java。
+**生产差异**：标准通道追加 10% 人工抽检（XXL-Job 抽样）；F7 复核质疑自动触发深查（P0 复核为按需 API）。
+
+### 11.6 理算计算（纯代码计算器）
+
+**设计方案**：金额是资金权的核心，**只允许纯代码计算**，LLM 禁入。公式固定、入参全部来自确定性数据源（定损额/保单快照/责任比例），每笔输出带可读 breakdown 供审计与前端展示。责任比例 P0 由描述关键词确定性映射（次要 30%/同等 50%/主要 70%/默认全责 100%）。
+
+**流程**：
+1. 经工具网关取保单快照与 `liability.percent`；
+2. `ClaimCalculator.calculate()`：
+   ```
+   折旧 = 定损额 × 折旧率%
+   责任后 = (定损额 − 折旧) × 责任比例%
+   免赔后 = 责任后 − 免赔额
+   应赔 = max(0, min(保单限额, 免赔后))
+   ```
+   入参校验：金额不得为负、比例须在 0–100（非法直接抛错，不静默兜底）；
+3. 写回案件 payableCents，归档 CALCULATE（含 breakdown）；状态 CALCULATED。
+
+**示例**：定损 ¥4,200、折旧 10%、全责、免赔 ¥500 → 4200−420=3780 → −500=3280 → 应赔 ¥3,280。
+
+**实现**：claim-core/calc/ClaimCalculator.java、ClaimActivitiesImpl.calculate:163、ToolGatewayImpl.liabilityPercent。
+**生产差异**：F6 LLM 理算草案与计算器双跑比对，差异落监控（机器版「人工推翻率」）；责任比例来自认定书结构化字段。
+
+### 11.7 分级审批（额度授权）
+
+**设计方案**：审批是人工制衡点，分级规则确定性：**快赔免人工（效率）、大额双人会签（制衡）、拒赔必确认（审慎）**。审批记录全量落库（操作人/结论/意见/金额），批准计数以库为准——重启/重试不丢审批进度。任何一票驳回即终止赔付。
+
+**流程**：
+1. `requiredApprovers(payableCents, channel)`：FAST → 0（直接支付）；应赔 > ¥100,000 → 2；其余 → 1；
+2. need>0 → 状态 APPROVING，循环等待 APPROVE 决策（生产 signal / 本地轮询）：
+   - 收到驳回（approved=false）→ `reject("审批驳回: 意见")` + 通知 REJECTED，流程终止；
+   - 收到批准 → 计数+1（本地以 `approvalCount` 库计数为准，防重复计数）；
+   - 期间客户异议 → 转 MANUAL；
+3. 批准数达标 → 进入支付（§11.8）。
+
+**实现**：claim-core/approval/ApprovalService.java:24、ClaimWorkflowImpl:100-118、LocalPipelineRunner:137-152。
+**生产差异**：审批人身份走 RBAC+额度授权矩阵（P0 操作人为表单字段）；durable timer 超时自动升级上级审批（P0 本地 30 分钟窗口超时转人工关闭）。
+
+### 11.8 支付与双账本（资金一致性）
+
+**设计方案**：资金动作遵循「**幂等键先行、双账本同事务、事务消息保可见性、outbox 供回查、对账兜底**」。业务账（案件维度应付）与资金账（渠道维度实付）同库同事务落库，任何一笔赔付两账必然相等；重复支付请求返回原结果不重复记账。生产走 RocketMQ 半消息：账本落库成功消息才可见，进程崩溃由 broker 回查 outbox 补决策。
+
+**流程**：
+1. 状态 PAYING；幂等键 = `案件号:批次`（P0 批次恒 1）；
+2. **生产（MQ 可用）**：`PaymentTransactionService.sendPayTransaction()` 发半消息 → 回调执行本地事务 `DoubleLedgerService.pay()` → COMMIT/ROLLBACK；异常返回 UNKNOW 交给回查；
+3. **本地（无 MQ）**：直连 `DoubleLedgerService.pay()`；
+4. `pay()` 内（@Transactional）：查 pay_outbox 幂等键——已存在 → 返回原金额原状态（alreadyProcessed）；不存在 → 同事务插入 ledger_business（PAYABLE）+ ledger_fund（OUT，渠道 BANK_DIRECT）+ pay_outbox（COMMITTED）；
+5. broker 回查（网络断/进程崩）：`checkLocalTransaction` 查 outbox 状态 → COMMITTED 补 COMMIT / 无记录 ROLLBACK / 未知继续 UNKNOW；
+6. 人工通道赔付金额以最终人工决策为准（写回 payableCents）；归档 PAY（金额+幂等键）。
+
+**实现**：claim-core/ledger/DoubleLedgerService.java、claim-mq/PaymentTransactionService.java、ClaimActivitiesImpl.pay:182。
+**生产差异**：真实持牌通道/银企直连划款 + 银行回执异步核对 + 长短款挂账 + 差错处理台（P0 为模拟支付，账本/幂等/事务消息机制完整）。
+
+### 11.9 核心登记、通知与结案
+
+**设计方案**：本系统不是记录系统——赔付生效后经**核心系统既有接口**登记（工具网关写工具，幂等），绝不绕过核心改保单。通知走事件发布（生产 RocketMQ claim-notify → 短信/推送；local 审计环回），agent 沟通只解释真实状态不承诺赔付。结案是状态机终点，SETTLED→CLOSED 两步留痕便于对账区分「已赔未归档」。
+
+**流程**：
+1. `registerCore`：工具网关 `core.register`——core_register 表已有记录 → 返回 `{registered:true, idempotent:true}`；否则插入并返回；归档 CORE_REGISTER；
+2. 状态 SETTLED；`notify(SETTLED)`：发布通知事件 + 归档 NOTIFY；
+3. 状态 CLOSED（终态）；
+4. 客户后续进度咨询：`POST /api/agent/notify` 由沟通 agent 基于案件真实状态回答；未配 Key 返回 503，前端降级气泡提示以详情页状态为准。
+
+**实现**：ClaimActivitiesImpl.registerCore:201/notify:207、ToolGatewayImpl.coreRegister、claim-agents/NotifyAgent.java。
+**生产差异**：核心登记适配真实批单/赔付接口（mTLS）；通知接短信/推送网关；F8 争议情绪识别自动升级人工。
+
+### 11.10 拒赔流程（人工确认强制）
+
+**设计方案**：「纯模型结论不得作为拒赔依据」是合规红线。拒赔只有两个合法入口：**核保免责 + 人工确认**、**审批驳回**；两者都要求人的显式动作，且拒赔理由必须可引用（免责条款编号/审批意见）。
+
+**流程**：
+1. 核保免责 → 状态 APPROVING（step=REJECT_CONFIRM），等待人工确认；
+2. 确认通过 → `reject(免责项编号串)`：状态 REJECTED + rejectReason 落库 + 归档 REJECT + 通知 REJECTED；
+3. 确认不通过/异议 → 转 MANUAL 人工核赔（不自动拒赔）；
+4. 审批驳回路径：任一驳回 → `reject("审批驳回: 意见")` + 通知，流程终止；
+5. 人工通道关闭（金额≤0 或超时）→ `reject("人工处理关闭: …")`。
+
+**实现**：ClaimWorkflowImpl:58-69/110-115/142、ClaimActivitiesImpl.reject:214。
+**生产差异**：拒赔通知附条款原文解释（F3 生成，引用规则引擎命中项）；客户申诉进入异议流程（§11.11）。
+
+### 11.11 人工通道、降级与异议升级
+
+**设计方案**：人工通道是系统的「兜底态」而非异常态——**任何自动化失败都显式降级到 MANUAL 并归档原因，流程不停摆**。降级来源四类：模型/识别不可用、高风险大额路由、客户异议、管道异常。人工处理保留完整资金权：核赔师可填金额赔付（走同一支付/双账本链路），也可关闭拒赔。
+
+**流程**：
+1. 触发：`toManual(reason)` → channel=MANUAL、状态 MANUAL、归档 MANUAL 原因、通知 MANUAL；
+2. 等待 MANUAL_HANDLE 决策（生产 signal / 本地轮询，30 分钟窗口）；
+3. 批准且金额>0 → PAYING → pay(人工金额) → registerCore → SETTLED → CLOSED（与自动通道同一资金链路）；
+4. 否则 → reject 关闭（REJECTED）；
+5. **异议升级**：`POST /api/claims/{no}/dispute`——生产发 dispute signal，workflow 在**任何 await 节点**（补件/拒赔确认/审批/人工）收到即转 MANUAL；本地直接置 MANUAL；
+6. 管道未捕获异常 → 状态 MANUAL + 错误日志（不静默丢案）。
+
+**实现**：ClaimWorkflowImpl.toManual:128/awaitDecision:147、CaseService.dispute:102、LocalPipelineRunner.resumeManual:168。
+**生产差异**：SIU 调查工作台独立视图（P0 与核赔工作台合一）；人工改判经 claim-feedback 回流标注平台。
+
+### 11.12 对账（差错防线）
+
+**设计方案**：对账是资金一致性的最后防线。P0 实现第一层：**业务账 vs 资金账**按案件+批次全量比对，缺账或金额不等落 recon_diff（OPEN）供差错处理；仪表盘实时显示未决差异数。设计上三层对账（§5.3）逐层兜底，任何一层发现差异都不自动改账，必须人工差错处理。
+
+**流程**：
+1. `POST /api/recon/run` → `ReconciliationService.reconcile()`：ledger_business LEFT JOIN ledger_fund（案件+批次），资金账缺失或金额不等 → 插入 recon_diff（OPEN）；
+2. `GET /api/recon/diffs` 查询未决差异；仪表盘「待处理对账差」卡片展示；
+3. 冒烟验收口径：全流程跑完对账**零差异**。
+
+**实现**：claim-core/ledger/ReconciliationService.java。
+**生产差异**：XXL-Job 日终调度；追加第二层（本系统 vs 核心系统）、第三层（账本 vs 银行回执）；长短款挂账与差错处理台。
+
+### 11.13 证据哈希链与决策审计
+
+**设计方案**：每步决策「事件 + 证据」双写：决策事件供查询/回放，证据快照以**哈希链**锚定防篡改——`digest = SHA-256(prevHash | outputJson)`，逐条挂链，首条锚 GENESIS。索引落库、对象字节落存储（生产 MinIO WORM≥10 年 / local 文件系统），校验时**从存储重读字节重算**，库被改或对象被改都会断链。
+
+**流程**：
+1. 每个 activity 步骤调 `archive(caseNo, step, outputJson)`：
+   - 生成 DecisionEvent（traceId=UUID、actor、step、output、ts）→ EventPublisher（生产 RocketMQ 顺序消息按案件号分区 / local 日志环回 + claim_decision 表）；
+   - EvidenceStore.snapshot：取案件最新 seq → digest=SHA256(prevHash|output) → 对象 `{caseNo}/{seq}.json` 写入存储 → evidence_index 落库（seq/evidenceId/objectKey/sha256/prevHash/step/ts）；
+2. `GET /api/claims/{no}/evidence/verify` → verifyChain：按 seq 逐条重读对象字节、重算 digest、比对 sha256 与 prev_hash 衔接 → chainValid；
+3. 工具调用另落 tool_audit（工具名/案件/入参/结果截断 2000 字符/ts），前端「工具审计」页签展示；
+4. LLM 调用经 ChatModelListener 记 token 计量（prompt/completion），统计入仪表盘。
+
+**实现**：claim-infra/minio/AbstractEvidenceStore.java（LocalFsEvidenceStore/MinioEvidenceStore 两实现）、ClaimActivitiesImpl.archive:228、claim-mq/LocalLogEventPublisher/RocketMqEventPublisher。
+**生产差异**：MinIO 对象锁 WORM 合规保留≥10 年；inputHash 为真实输入 SHA-256（P0 为 output hashCode 十六进制，如实标注）；事件经数仓归档。
+
+### 11.14 工具网关（案件级 ACL + 强制审计）
+
+**设计方案**：agent 的 @Tool 只是 schema 语法糖，**方法体内强制委托工具网关**——白名单注册制（未注册工具直接 SecurityException）、必须携带案件上下文、每次调用全量审计。读写工具分域：复核 agent 只读，写工具仅 core.register（幂等）。进程内实现与生产独立网关**接口一致**，agent 侧代码零改动迁移。
+
+**工具清单**：
+| 工具 | 域 | 数据源/行为 |
+|---|---|---|
+| policy.query | 读 | policy_snapshot ⋈ claim_case，返回保单快照 JSON |
+| parts.price | 读 | part_price 按车型+配件名，返回价格+来源 ID；无记录返回错误不编造 |
+| history.count | 读 | 同保单历史已结案件数 |
+| graph.flagged | 读 | repair_shop_flag 修理厂黑名单 |
+| case.materials / case.description | 读 | 案件材料清单/描述 |
+| liability.percent | 读 | 描述关键词 → 责任比例（30/50/70/100） |
+| core.register | 写 | 核心登记，core_register 幂等 |
+
+**实现**：claim-infra/jdbc/ToolGatewayImpl.java、claim-common/port/ToolGateway.java。
+**生产差异**：独立网关服务（OAuth2 鉴权/限流/核心系统 mTLS 适配）；ToolProvider SPI 按 agent 类型动态授权（P0 白名单为全局静态）。
+
+### 11.15 模型网关与 agent 装配
+
+**设计方案**：模型调用一律经 LlmGatewayClient（JDK HttpClient 零 SDK，OpenAI 兼容协议），LangChain4j 侧由 GatewayChatModel/GatewayStreamingChatModel 双适配器收口——**禁止 OpenAiChatModel 直配 apiKey**。控制点全部在网关：agentType 路由、出域脱敏、按端点熔断、分类重试、usage 计量。agent 不可用是**一等公民异常**（AgentUnavailableException），上层显式降级而非静默吞掉。
+
+**机制参数（已实现）**：
+- 路由：按 agentType 查端点表（baseUrl+model 显式配置），支持备用端点故障切换；
+- 脱敏：身份证（17 位+校验位）/银行卡（16–19 位）/手机号（1[3-9] 开头 11 位），先长后短防截断；私有化端点（影像不出域）跳过脱敏；
+- 熔断：按端点连续失败 5 次 → 熔断 60s，到期 half-open 探测；
+- 重试：429/5xx/网络超时分类退避重试（≤2 次）；4xx 参数鉴权错误与已出流的流式中断**不重试**；
+- 超时：连接 5s、请求 60s；
+- 计量：usage（prompt/completion tokens）落审计与统计。
+
+**agent 装配（P0 六门面）**：AgentFactory 按类型 build AiServices；定损挂 AssessTools（价格库/保单）、复核挂 ReviewTools（只读）；CaseContext（ThreadLocal）把案件号注入工具调用，工具网关据此做案件级审计。六门面：intake 受理 / assess 定损 / coverage-explain 核保解释 / fraud-report 欺诈报告 / review 独立复核 / notify 客户沟通。
+
+**实现**：claim-llm/LlmGatewayClient.java、MaskingService.java、GatewayChatModel/GatewayStreamingChatModel、claim-agents/AgentFacade.java、claim-agent-runtime/AgentFactory。
+**生产差异**：语义缓存（Redis）、prompt 版本注入、内容安全过滤、成本落账到案件、八 agent 独立部署组（doc-extract/doc-vision 补齐，§6.2）。
+
+### 11.16 重启恢复（local 管道 vs Temporal）
+
+**设计方案**：生产恢复由 Temporal durable 执行天然保证（workflow 状态持久化，worker 重启自动续跑，无恢复代码）。local 管道线程不持久，恢复策略是**按案件当前状态续接等待节点**——只恢复「等人」的案件，不重跑已完成的步骤；中间态（COVERAGE_CHECK/ASSESSING 等）不自动续接而是告警，避免重复执行资金动作。
+
+**流程（ApplicationReadyEvent）**：
+1. 遍历案件（≤500）：
+   - REPORTED / MATERIALS_PENDING → 重新提交管道（createCase 幂等，从头门禁检查）；
+   - APPROVING → `resumeApproval`：读最近一条 COVERAGE 决策输出——`covered:false` → 续接拒赔确认节点；否则按 requiredApprovers 与库内已批准数续接赔付审批；
+   - MANUAL → `resumeManual`：续接人工处理等待；
+   - CLOSED/SETTLED/REJECTED → 终态跳过；
+   - 其余中间态 → 告警不续接（日志明示「生产 Temporal 无此限制」）；
+2. 等待节点统一 30 分钟窗口、2s 轮询；审批计数以 claim_approval 库为准，重启不丢已批准票。
+
+**实现**：LocalPipelineRunner.recover:50/resumeApproval:181/resumeManual:168。
+**实测**：重启后日志「本地管道已恢复 N 个未决案件的等待节点」，补件/审批动作续接有效。
+
+### 11.17 前端工作台交互设计
+
+**设计方案**：单文件 SPA（原生 JS，零构建依赖），hash 路由五视图：**仪表盘 / 报案登记 / 案件列表 / 人工工作台 / 审计追溯**；案件详情六页签：材料 / 决策时间线 / 人工审批 / 双账本 / 工具审计 / 客户通知。设计语言墨蓝×青碧，通道四色语义（FAST 琥珀/STANDARD 电蓝/INVESTIGATE 玫红/MANUAL 紫罗兰）。
+
+**关键纪律**：
+- **轮询纪律**：仪表盘 15s / 工作台 8s / 详情 3s；路由切换 stopPoll() 清定时器，输入框聚焦暂停刷新防打断；
+- **降级可见**：AI 端点 503 → 明确降级提示（通知气泡/按钮提示），不假装成功；顶栏端点可用性灯带；
+- **模态遮罩**：`.modal-scrim[hidden]{display:none}` 显式兜底（display:flex 会覆盖 UA 的 hidden 语义，曾致遮罩常驻挡屏）；Esc/点遮罩关闭；
+- **缓存纪律**：local 静态资源强制 no-cache+must-revalidate，修复下发即生效，杜绝浏览器启发式缓存旧样式；
+- **响应式**：桌面 + 375px 移动布局结构化验收通过。
+
+**实现**：claim-gateway/src/main/resources/static/（index.html/app.js/style.css）。
+
+## 12. 验证结果（2026-11-18）
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 `./mvnw test` | 17/17（脱敏/计算器/双账本幂等/审批分级/核保规则） |
+| 端到端冒烟 `smoke-test.py` | 14/14（报案→补件→决策→结案→双账本→事件链→证据链→审计→对账零差异→统计） |
+| 浏览器闭环实测 | 报案→补件→审批/驳回→结案、异议升级、AI 503 降级、移动布局 |
+| 重启恢复 | local 管道等待节点续接实测通过 |
+| 中间件 | ops-pro claim-shared 栈 7/7 RUNNING；MinIO 源码构建 + S3 建桶/传/读/删往返实测 |
+| 事务消息回查演练 | 属生产档位验证项（§11 验证计划 3），local 无 MQ 不涉及 |
+
+验证计划（生产档位）：compose 起基础设施 → 冒烟全链路 → kill 进程半消息回查补 COMMIT → Temporal 断点续跑 → 断模型端点纯人工降级演练 → 金标集回归。
