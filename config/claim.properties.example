@@ -1,0 +1,22 @@
+# claim-pro 敏感配置模板。真实文件放 ~/.config/claim-pro/claim.properties（目录700/文件600）。
+# 仓库内禁止出现真实密钥。
+
+# DeepSeek（官方 OpenAI 兼容端点；官方模型 ID ≠ 第三方平台 ID）
+claim.llm.fallback.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.intake.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.notify.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.coverage-explain.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.assess.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.review.api-key=sk-xxxxxxxxxxxxxxxx
+claim.llm.routes.fraud-report.api-key=sk-xxxxxxxxxxxxxxxx
+# 私有化视觉端点（影像不出域）示例：
+# claim.llm.routes.doc-vision.base-url=http://vlm.internal:8000/v1
+# claim.llm.routes.doc-vision.model=deepseek-vl2
+# claim.llm.routes.doc-vision.private-deployment=true
+
+# MySQL（生产 profile）
+spring.datasource.password=xxxxxxxx
+
+# MinIO
+claim.minio.access-key=xxxxxxxx
+claim.minio.secret-key=xxxxxxxx

@@ -1,0 +1,86 @@
+server:
+  port: ${CLAIM_PORT:8097}
+
+spring:
+  application:
+    name: claim-pro
+  config:
+    import: "optional:file:${user.home}/.config/claim-pro/claim.properties"
+  datasource:
+    url: jdbc:mysql://${CLAIM_MYSQL_HOST:127.0.0.1}:${CLAIM_MYSQL_PORT:3306}/claim?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${CLAIM_MYSQL_USER:claim}
+    password: ${CLAIM_MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: never
+  data:
+    redis:
+      host: ${CLAIM_REDIS_HOST:127.0.0.1}
+      port: ${CLAIM_REDIS_PORT:6379}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+claim:
+  temporal:
+    enabled: ${CLAIM_TEMPORAL_ENABLED:true}
+    target: ${CLAIM_TEMPORAL_TARGET:127.0.0.1:7233}
+    namespace: default
+    task-queue: claim-main
+  mq:
+    enabled: ${CLAIM_MQ_ENABLED:true}
+    namesrv: ${CLAIM_ROCKETMQ_NAMESRV:127.0.0.1:9876}
+  minio:
+    enabled: ${CLAIM_MINIO_ENABLED:true}
+    endpoint: ${CLAIM_MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${CLAIM_MINIO_ACCESS_KEY:}
+    secret-key: ${CLAIM_MINIO_SECRET_KEY:}
+    bucket: claim-evidence
+  route:
+    fast-limit-cents: 500000
+    standard-limit-cents: 5000000
+    risk-low: 30
+    risk-high: 70
+    confidence-min: 0.85
+  llm:
+    masking: true
+    retry-max: 2
+    retry-backoff-ms: 500
+    circuit-failure-threshold: 5
+    circuit-open-ms: 60000
+    timeout-ms: 60000
+    temperature: 0.2
+    max-tokens: 2048
+    fallback:
+      base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+      model: ${CLAIM_LLM_MODEL:deepseek-flash}
+      api-key: ${CLAIM_LLM_KEY:}
+    routes:
+      intake:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_FLASH_MODEL:deepseek-flash}
+        api-key: ${CLAIM_LLM_KEY:}
+      notify:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_FLASH_MODEL:deepseek-flash}
+        api-key: ${CLAIM_LLM_KEY:}
+      coverage-explain:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_FLASH_MODEL:deepseek-flash}
+        api-key: ${CLAIM_LLM_KEY:}
+      assess:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_FLASH_MODEL:deepseek-flash}
+        api-key: ${CLAIM_LLM_KEY:}
+      review:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_CHAT_MODEL:deepseek-chat}
+        api-key: ${CLAIM_LLM_KEY:}
+      fraud-report:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_CHAT_MODEL:deepseek-chat}
+        api-key: ${CLAIM_LLM_KEY:}

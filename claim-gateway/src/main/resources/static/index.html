@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLAIMDESK · 保险理赔多智能体工作台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M16 6l8 3v7c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V9z' fill='none' stroke='%23e6fff9' stroke-width='2'/%3E%3Cpath d='M12 16l3 3 5-6' fill='none' stroke='%23fbbf24' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="url(#bg)"/>
+        <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0e7490"/>
+        </linearGradient></defs>
+        <path d="M16 6l8 3v7c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V9z" fill="none" stroke="#e6fff9" stroke-width="2"/>
+        <path d="M12 16l3 3 5-6" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <div class="brand-text">
+        <strong>CLAIMDESK</strong>
+        <span>理赔多智能体工作台</span>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#/dashboard" data-route="dashboard"><em>◈</em>仪表盘</a>
+      <a href="#/report" data-route="report"><em>✚</em>报案登记</a>
+      <a href="#/cases" data-route="cases"><em>▤</em>案件列表</a>
+      <a href="#/workbench" data-route="workbench"><em>⚖</em>人工工作台<b class="nav-badge" id="navQueueBadge" hidden></b></a>
+      <a href="#/audit" data-route="audit"><em>⌘</em>审计追溯</a>
+    </nav>
+    <div class="side-foot">
+      <div class="engine-card" id="engineCard">
+        <span class="dot" id="engineDot"></span>
+        <div><strong id="engineName">编排引擎</strong><small id="engineDesc">检测中…</small></div>
+      </div>
+      <small class="ver">claim-pro · 商用架构 · RocketMQ / Temporal</small>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="菜单">☰</button>
+      <div class="crumb" id="crumb">仪表盘</div>
+      <div class="top-search">
+        <input id="globalSearch" type="search" placeholder="搜索案件号 / 保单号 / 描述…（回车）" autocomplete="off">
+      </div>
+      <div class="agent-strip" id="agentStrip" title="模型网关各 Agent 端点可用性"></div>
+      <div class="clock" id="clock"></div>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+</div>
+
+<div class="toast-rail" id="toastRail"></div>
+<div class="modal-scrim" id="modalScrim" hidden><div class="modal" id="modalBox"></div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

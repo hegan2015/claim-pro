@@ -1,0 +1,90 @@
+# claim-pro 基础设施（与 ops-pro/deploy/middleware-compose.yml 同定义，共享卷 claim-shared-*）。
+# 日常统一由 ops-pro 运维控制台启停；本文件供无 ops-pro 时独立使用。
+services:
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=sqlite3
+      - SKIP_POSTGRES_DB_CREATION=true
+    volumes:
+      - claim-shared-temporal:/etc/temporal
+
+  temporal-ui:
+    image: temporalio/ui:2.26.2
+    ports:
+      - "8088:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.1.4
+    command: sh mqnamesrv
+    ports:
+      - "9876:9876"
+    volumes:
+      - claim-shared-namesrv:/home/rocketmq/logs
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.1.4
+    command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
+    ports:
+      - "10911:10911"
+      - "10909:10909"
+    environment:
+      - NAMESRV_ADDR=rocketmq-namesrv:9876
+    depends_on:
+      - rocketmq-namesrv
+    volumes:
+      - claim-shared-broker:/home/rocketmq/store
+
+  rocketmq-dashboard:
+    image: apacherocketmq/rocketmq-dashboard:1.0.0
+    ports:
+      - "19876:8080"
+    environment:
+      - JAVA_OPTS=-Drocketmq.namesrv.addr=rocketmq-namesrv:9876
+    depends_on:
+      - rocketmq-namesrv
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-claim_root_dev}
+      - MYSQL_DATABASE=claim
+      - MYSQL_USER=claim
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-claim_dev}
+    volumes:
+      - claim-shared-mysql:/var/lib/mysql
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - claim-shared-redis:/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-claim_minio}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-claim_minio_dev}
+    volumes:
+      - claim-shared-minio:/data
+
+volumes:
+  claim-shared-temporal:
+  claim-shared-namesrv:
+  claim-shared-broker:
+  claim-shared-mysql:
+  claim-shared-redis:
+  claim-shared-minio:

@@ -1,0 +1,26 @@
+# 本地开发 profile：H2 文件库 + 本地开发管道 + 日志事件 + 本地证据库。
+# 生产一律用默认 profile（MySQL/Temporal/RocketMQ/MinIO），本 profile 启动时各项均明确告警。
+spring:
+  web:
+    resources:
+      # 开发期前端热替换：优先读源码目录，改 JS/CSS 无需重打包
+      static-locations: file:./claim-gateway/src/main/resources/static/,classpath:/static/
+  datasource:
+    url: jdbc:h2:file:./data/claim;MODE=MySQL;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      data-locations: classpath:data.sql
+
+claim:
+  temporal:
+    enabled: false
+  mq:
+    enabled: false
+  minio:
+    enabled: false
+    local-dir: data/evidence
