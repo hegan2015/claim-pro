@@ -33,9 +33,12 @@ public class GraphBuildService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper json = new ObjectMapper();
+    private final org.springframework.beans.factory.ObjectProvider<com.qoder.claim.infra.graph.NebulaGraphStore> nebula;
 
-    public GraphBuildService(JdbcTemplate jdbc) {
+    public GraphBuildService(JdbcTemplate jdbc,
+                             org.springframework.beans.factory.ObjectProvider<com.qoder.claim.infra.graph.NebulaGraphStore> nebula) {
         this.jdbc = jdbc;
+        this.nebula = nebula;
     }
 
     public Map<String, Object> build(String triggerBy) {
@@ -130,6 +133,16 @@ public class GraphBuildService {
         out.put("shopCount", shops.size());
         out.put("newFlagCount", newFlags);
         out.put("durationMs", duration);
+        // NebulaGraph 实时图同步（可选增强，失败不阻断 T+1 关系库基线）
+        com.qoder.claim.infra.graph.NebulaGraphStore store = nebula.getIfAvailable();
+        if (store != null) {
+            try {
+                out.put("nebulaSync", store.syncFromDb(jdbc));
+            } catch (Exception e) {
+                log.warn("NebulaGraph 同步失败（关系库基线不受影响）: {}", e.getMessage());
+                out.put("nebulaSync", Map.of("error", String.valueOf(e.getMessage())));
+            }
+        }
         return out;
     }
 

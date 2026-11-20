@@ -76,6 +76,7 @@ public class CaseService {
 
     public void submitMaterials(String caseNo, List<Material> batch) {
         require(caseNo);
+        List<Material> existing = materials.list(caseNo);
         for (Material m : batch) {
             m.setCaseNo(caseNo);
             if (m.getMaterialId() == null) {
@@ -84,7 +85,14 @@ public class CaseService {
             if (m.getSha256() == null) {
                 m.setSha256(sha256(m.getStorageKey() == null ? m.getMaterialId() : m.getStorageKey()));
             }
+            // 幂等去重：同案同类型同哈希视为同一材料，重复登记直接跳过
+            boolean dup = existing.stream().anyMatch(x -> x.getType() != null && x.getType().equals(m.getType())
+                    && m.getSha256().equals(x.getSha256()));
+            if (dup) {
+                continue;
+            }
             materials.save(m);
+            existing.add(m);
         }
         signalMaterials(caseNo);
     }
@@ -111,6 +119,14 @@ public class CaseService {
         }
         // MIME 一律由白名单扩展名推导，不信任客户端声明，防止内容类型伪装
         String ct = EXT_CONTENT_TYPE.get(ext);
+        String contentHash = sha256(bytes);
+        // 幂等去重：同案同类型同内容哈希的重复上传返回原材料，不重复落对象
+        Material dup = materials.list(caseNo).stream()
+                .filter(x -> type.equals(x.getType()) && contentHash.equals(x.getSha256()))
+                .findFirst().orElse(null);
+        if (dup != null) {
+            return dup;
+        }
         String materialId = caseNo + "-M-" + UUID.randomUUID().toString().substring(0, 6);
         String objectKey = "materials/" + caseNo + "/" + materialId;
         fileStore.getObject().put(objectKey, bytes, ct);
@@ -119,7 +135,7 @@ public class CaseService {
         m.setCaseNo(caseNo);
         m.setType(type);
         m.setStorageKey(objectKey);
-        m.setSha256(sha256(bytes));
+        m.setSha256(contentHash);
         m.setConfidence(confidence);
         m.setFileName(name);
         m.setContentType(ct);
@@ -166,6 +182,10 @@ public class CaseService {
 
     public void humanDecision(String caseNo, HumanDecision d) {
         require(caseNo);
+        // 服务端兜底：人工批准必须带正金额，防止「批准但金额0」被规则关闭成误拒赔
+        if ("MANUAL_HANDLE".equals(d.getStep()) && d.isApproved() && d.getAmountCents() <= 0) {
+            throw new InvalidDecisionException("人工处理批准必须填写大于0的赔付金额；不赔付请选择驳回/关闭");
+        }
         d.setCaseNo(caseNo);
         approval.record(caseNo, d.getStep(), d.getOperator(), d.isApproved(), d.getComment(), d.getAmountCents());
         WorkflowStarter t = temporal.getIfAvailable();

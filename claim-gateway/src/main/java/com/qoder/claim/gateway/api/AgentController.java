@@ -15,10 +15,12 @@ public class AgentController {
 
     private final AgentFacade agents;
     private final CaseRepository cases;
+    private final ClauseService clauses;
 
-    public AgentController(AgentFacade agents, CaseRepository cases) {
+    public AgentController(AgentFacade agents, CaseRepository cases, ClauseService clauses) {
         this.agents = agents;
         this.cases = cases;
+        this.clauses = clauses;
     }
 
     @GetMapping("/availability")
@@ -29,7 +31,22 @@ public class AgentController {
                 "coverage-explain", agents.available("coverage-explain"),
                 "fraud-report", agents.available("fraud-report"),
                 "review", agents.available("review"),
-                "notify", agents.available("notify"));
+                "notify", agents.available("notify"),
+                "calc-draft", agents.available("calc-draft"),
+                "doc-vision", agents.available("doc-vision"));
+    }
+
+    @PostMapping("/coverage-explain/{caseNo}")
+    public ResponseEntity<?> coverageExplain(@PathVariable String caseNo) {
+        var c = cases.find(caseNo).orElse(null);
+        if (c == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "案件不存在"));
+        }
+        try {
+            return ResponseEntity.ok(clauses.explain(caseNo, c.getDescription()));
+        } catch (AgentUnavailableException e) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", e.getMessage()));
+        }
     }
 
     @PostMapping("/intake")

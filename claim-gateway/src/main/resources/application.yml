@@ -34,7 +34,7 @@ claim:
     enabled: ${CLAIM_TEMPORAL_ENABLED:true}
     target: ${CLAIM_TEMPORAL_TARGET:127.0.0.1:7233}
     namespace: default
-    task-queue: claim-main
+    task-queue: ${CLAIM_TASK_QUEUE:claim-core}
   mq:
     enabled: ${CLAIM_MQ_ENABLED:true}
     namesrv: ${CLAIM_ROCKETMQ_NAMESRV:127.0.0.1:9876}
@@ -60,6 +60,20 @@ claim:
     risk-low: 30
     risk-high: 70
     confidence-min: 0.85
+  fraud:
+    strategy: ${CLAIM_FRAUD_STRATEGY:rules}
+  graph:
+    nebula:
+      enabled: ${CLAIM_GRAPH_NEBULA:false}
+      hosts: ${CLAIM_NEBULA_HOSTS:127.0.0.1:9669}
+      space: ${CLAIM_NEBULA_SPACE:claim_graph}
+      user: ${CLAIM_NEBULA_USER:root}
+      password: ${CLAIM_NEBULA_PASSWORD:nebula}
+  canary:
+    enabled: ${CLAIM_CANARY_ENABLED:false}
+    percent: ${CLAIM_CANARY_PERCENT:0}
+    orgs: ${CLAIM_CANARY_ORGS:}
+    insurance-types: ${CLAIM_CANARY_TYPES:}
   llm:
     masking: true
     retry-max: 2
@@ -98,3 +112,11 @@ claim:
         base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
         model: ${CLAIM_LLM_CHAT_MODEL:deepseek-chat}
         api-key: ${CLAIM_LLM_KEY:}
+      calc-draft:
+        base-url: ${CLAIM_LLM_BASE_URL:https://api.deepseek.com/v1}
+        model: ${CLAIM_LLM_FLASH_MODEL:deepseek-flash}
+        api-key: ${CLAIM_LLM_KEY:}
+      doc-vision:
+        base-url: ${CLAIM_VISION_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+        model: ${CLAIM_VISION_MODEL:qwen-vl-max}
+        api-key: ${CLAIM_VISION_KEY:}

@@ -1,0 +1,86 @@
+package com.qoder.claim.core.rule;
+
+import com.qoder.claim.core.rule.PolicySnapshot;
+import com.qoder.claim.core.rule.AccidentFacts;
+import com.qoder.claim.core.rule.CoverageDecision;
+
+global CoverageDecision decision;
+
+// 条款规则包 clause-2026-v1：与核保解释/金标回归共用同一判定语义。
+// 拒赔必须命中免责码（合规红线），纯模型结论不得作为拒赔依据。
+
+rule "excl-period" salience 100
+when
+    $p : PolicySnapshot()
+    $a : AccidentFacts()
+    eval($a.accidentDate().isBefore($p.getEffectiveDate()) || $a.accidentDate().isAfter($p.getExpiryDate()))
+then
+    decision.setCovered(false);
+    decision.getExclusions().add("EXCL-PERIOD");
+    decision.setExplanationKey("accident-outside-policy-period");
+    drools.halt();
+end
+
+rule "excl-type" salience 95
+when
+    $p : PolicySnapshot()
+    $a : AccidentFacts()
+    eval(!$p.getCoverageTypes().contains($a.accidentType()))
+then
+    decision.setCovered(false);
+    decision.getExclusions().add("EXCL-TYPE");
+    decision.setExplanationKey("accident-type-not-covered");
+    drools.halt();
+end
+
+rule "clause-period-ok" salience 90
+when
+    $p : PolicySnapshot()
+    $a : AccidentFacts()
+    eval(!$a.accidentDate().isBefore($p.getEffectiveDate()) && !$a.accidentDate().isAfter($p.getExpiryDate()))
+then
+    decision.getHitClauses().add("CLAUSE-PERIOD-OK");
+end
+
+rule "clause-type-ok" salience 80
+when
+    $p : PolicySnapshot()
+    $a : AccidentFacts()
+    eval($p.getCoverageTypes().contains($a.accidentType()))
+then
+    decision.getHitClauses().add("CLAUSE-TYPE-OK");
+end
+
+rule "excl-drunk" salience 70
+when
+    $a : AccidentFacts()
+    eval($a.drunkDriving())
+then
+    decision.setCovered(false);
+    decision.getExclusions().add("EXCL-DRUNK");
+end
+
+rule "excl-unlicensed" salience 69
+when
+    $a : AccidentFacts()
+    eval($a.unlicensed())
+then
+    decision.setCovered(false);
+    decision.getExclusions().add("EXCL-UNLICENSED");
+end
+
+rule "excl-intentional" salience 68
+when
+    $a : AccidentFacts()
+    eval($a.intentional())
+then
+    decision.setCovered(false);
+    decision.getExclusions().add("EXCL-INTENTIONAL");
+end
+
+rule "statutory-exclusion-key" salience 60
+when
+    eval(!decision.isCovered() && decision.getExplanationKey() == null)
+then
+    decision.setExplanationKey("statutory-exclusion");
+end

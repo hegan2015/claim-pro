@@ -218,3 +218,33 @@ CREATE TABLE IF NOT EXISTS gold_case_result (
     mismatches_json VARCHAR(2000),
     ts BIGINT
 );
+CREATE TABLE IF NOT EXISTS calc_dual_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    case_no VARCHAR(40),
+    calc_payable_cents BIGINT,
+    draft_payable_cents BIGINT,
+    diff_cents BIGINT,
+    is_match INT,
+    draft_json VARCHAR(2000),
+    ts BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS clause_text (
+    clause_id VARCHAR(40) PRIMARY KEY,
+    version VARCHAR(32),
+    code VARCHAR(40),
+    title VARCHAR(128),
+    body VARCHAR(2000),
+    effective_from DATE,
+    effective_to DATE
+);
+
+CREATE TABLE IF NOT EXISTS shadow_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ts BIGINT,
+    config_json VARCHAR(1000),
+    total INT,
+    drift_count INT,
+    samples_json CLOB,
+    duration_ms BIGINT
+);

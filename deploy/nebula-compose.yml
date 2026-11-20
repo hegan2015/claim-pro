@@ -1,0 +1,73 @@
+# claim-pro 欺诈图谱 NebulaGraph 扩展栈（单节点开发拓扑，可选）。
+# 主栈不受影响：claim.graph.nebula.enabled=false 时应用不连接。
+# 镜像经 daocloud 拉取后 retag：docker tag docker.m.daocloud.io/vesoft/nebula-{metad,storaged,graphd}:v3.6.0 vesoft/nebula-...:v3.6.0
+# 启动：docker compose -f deploy/nebula-compose.yml up -d
+# 客户端端口 9669（graphd），HTTP 状态 19669。root 初始口令 nebula（开发默认，生产改口令放仓库外）。
+version: '3.4'
+services:
+  metad0:
+    image: vesoft/nebula-metad:v3.6.0
+    container_name: claim-nebula-metad
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=metad0
+      - --ws_ip=metad0
+      - --port=9559
+      - --ws_http_port=19559
+      - --data_path=/data/meta
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=2
+    volumes:
+      - nebula-meta:/data/meta
+      - nebula-meta-logs:/logs
+    networks: [claim-nebula]
+    restart: unless-stopped
+  storaged0:
+    image: vesoft/nebula-storaged:v3.6.0
+    container_name: claim-nebula-storaged
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=storaged0
+      - --ws_ip=storaged0
+      - --port=9779
+      - --ws_http_port=19779
+      - --data_path=/data/storage
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=2
+    volumes:
+      - nebula-storage:/data/storage
+      - nebula-storage-logs:/logs
+    depends_on: [metad0]
+    networks: [claim-nebula]
+    restart: unless-stopped
+  graphd0:
+    image: vesoft/nebula-graphd:v3.6.0
+    container_name: claim-nebula-graphd
+    command:
+      - --meta_server_addrs=metad0:9559
+      - --local_ip=graphd0
+      - --ws_ip=graphd0
+      - --port=9669
+      - --ws_http_port=19669
+      - --log_dir=/logs
+      - --v=0
+      - --minloglevel=2
+    ports:
+      - "9669:9669"
+      - "19669:19669"
+    volumes:
+      - nebula-graph-logs:/logs
+    depends_on: [storaged0]
+    networks: [claim-nebula]
+    restart: unless-stopped
+networks:
+  claim-nebula:
+    name: claim-nebula
+volumes:
+  nebula-meta:
+  nebula-meta-logs:
+  nebula-storage:
+  nebula-storage-logs:
+  nebula-graph-logs:

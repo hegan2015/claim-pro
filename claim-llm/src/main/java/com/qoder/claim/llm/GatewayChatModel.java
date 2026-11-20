@@ -92,7 +92,23 @@ public class GatewayChatModel implements ChatModel {
                 w.put("content", s.text());
             } else if (m instanceof UserMessage u) {
                 w.put("role", "user");
-                w.put("content", u.singleText());
+                if (u.hasSingleText()) {
+                    w.put("content", u.singleText());
+                } else {
+                    // 多模态（视觉定损）：text + image_url 块，OpenAI 兼容格式
+                    List<Map<String, Object>> parts = new ArrayList<>();
+                    for (dev.langchain4j.data.message.Content c : u.contents()) {
+                        if (c instanceof dev.langchain4j.data.message.TextContent t) {
+                            parts.add(Map.of("type", "text", "text", t.text()));
+                        } else if (c instanceof dev.langchain4j.data.message.ImageContent ic) {
+                            String url = ic.image().base64Data() != null
+                                    ? "data:" + ic.image().mimeType() + ";base64," + ic.image().base64Data()
+                                    : String.valueOf(ic.image().url());
+                            parts.add(Map.of("type", "image_url", "image_url", Map.of("url", url)));
+                        }
+                    }
+                    w.put("content", parts);
+                }
             } else if (m instanceof AiMessage a) {
                 w.put("role", "assistant");
                 if (a.text() != null) {

@@ -34,10 +34,13 @@ public class ClaimController {
     private final ObjectProvider<WorkflowStarter> temporal;
     private final ObjectProvider<LocalPipelineRunner> localPipeline;
     private final JdbcTemplate jdbc;
+    private final MaterialMigrationService migration;
+    private final ClauseService clauseService;
 
     public ClaimController(CaseService service, JdbcCaseRepository cases, ReconciliationService recon,
                            ObjectProvider<EvidenceStore> evidence, ObjectProvider<WorkflowStarter> temporal,
-                           ObjectProvider<LocalPipelineRunner> localPipeline, JdbcTemplate jdbc) {
+                           ObjectProvider<LocalPipelineRunner> localPipeline, JdbcTemplate jdbc,
+                           MaterialMigrationService migration, ClauseService clauseService) {
         this.service = service;
         this.cases = cases;
         this.recon = recon;
@@ -45,6 +48,8 @@ public class ClaimController {
         this.temporal = temporal;
         this.localPipeline = localPipeline;
         this.jdbc = jdbc;
+        this.migration = migration;
+        this.clauseService = clauseService;
     }
 
     @GetMapping("/runtime")
@@ -135,6 +140,33 @@ public class ClaimController {
     @PostMapping("/recon/run")
     public Map<String, Object> runRecon() {
         return Map.of("newDiffs", recon.reconcile());
+    }
+
+    @PostMapping("/admin/materials/migrate")
+    public Map<String, Object> migrateMaterials(@RequestParam String direction) throws Exception {
+        return migration.migrate(direction);
+    }
+
+    @GetMapping("/calc-dual-run/stats")
+    public Map<String, Object> dualRunStats() {
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM calc_dual_run", Long.class);
+        Long matches = jdbc.queryForObject("SELECT COUNT(*) FROM calc_dual_run WHERE is_match=1", Long.class);
+        long t = total == null ? 0 : total;
+        long m = matches == null ? 0 : matches;
+        return Map.of("total", t, "matches", m, "mismatches", t - m,
+                "matchRate", t == 0 ? 1.0 : (double) m / t);
+    }
+
+    @GetMapping("/calc-dual-run/recent")
+    public List<Map<String, Object>> dualRunRecent(@RequestParam(defaultValue = "20") int limit) {
+        return jdbc.queryForList("SELECT * FROM calc_dual_run ORDER BY ts DESC, id DESC LIMIT " + Math.min(limit, 100));
+    }
+
+    @GetMapping("/clauses/search")
+    public Map<String, Object> clauseSearch(@RequestParam String q,
+                                            @RequestParam(defaultValue = "3") int limit) throws Exception {
+        var hits = clauseService.search(q, Math.min(limit, 10));
+        return Map.of("query", q, "hits", hits);
     }
 
     @GetMapping("/stats")

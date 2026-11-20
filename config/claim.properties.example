@@ -27,3 +27,28 @@ claim.minio.secret-key=xxxxxxxx
 
 # XXL-Job 执行器（mysql/default 档位；须与 ops-pro 侧 xxljob.access.token 同值）
 claim.xxljob.access-token=REPLACE_WITH_RANDOM_TOKEN
+# 欺诈评分策略：rules（默认，确定性基线）| model（XGBoost JPMML，模型不可用自动回退 rules）
+claim.fraud.strategy=rules
+
+# NebulaGraph 实时图（可选增强；须先起 deploy/nebula-compose.yml 栈）
+claim.graph.nebula.enabled=false
+claim.graph.nebula.hosts=127.0.0.1:9669
+claim.graph.nebula.space=claim_graph
+claim.graph.nebula.user=root
+claim.graph.nebula.password=nebula
+
+# 灰度发布（案件号哈希分桶；候选阈值仅作用 CANARY 组）
+claim.canary.enabled=false
+claim.canary.percent=0
+# claim.canary.orgs=SH,BJ
+# claim.canary.insurance-types=AUTO
+# claim.canary.candidate-fast-limit-cents=300000
+
+# 视觉定损端点（F2；OpenAI 兼容多模态，如百炼 qwen-vl-max；不配则降级文本定损）
+# claim.llm.routes.doc-vision.base-url=https://dashscope.aliyuncs.com/compatible-mode/v1
+# claim.llm.routes.doc-vision.model=qwen-vl-max
+# claim.llm.routes.doc-vision.api-key=sk-xxxxxxxxxxxxxxxx
+# 理算草案端点（F6 双跑；不配走 fallback）
+# claim.llm.routes.calc-draft.base-url=https://api.deepseek.com/v1
+# claim.llm.routes.calc-draft.model=deepseek-chat
+# claim.llm.routes.calc-draft.api-key=sk-xxxxxxxxxxxxxxxx

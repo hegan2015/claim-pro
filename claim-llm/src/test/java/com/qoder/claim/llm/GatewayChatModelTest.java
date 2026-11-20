@@ -44,4 +44,21 @@ class GatewayChatModelTest {
         org.junit.jupiter.api.Assertions.assertNull(model.toWireTools(List.of()));
         org.junit.jupiter.api.Assertions.assertNull(model.toWireTools(null));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void multimodalUserMessageProducesImageParts() throws Exception {
+        dev.langchain4j.data.message.UserMessage um = dev.langchain4j.data.message.UserMessage.from(
+                dev.langchain4j.data.message.TextContent.from("识别受损部件"),
+                dev.langchain4j.data.message.ImageContent.from(
+                        dev.langchain4j.data.image.Image.builder().base64Data("aGVsbG8=").mimeType("image/png").build()));
+        List<Map<String, Object>> wire = model.toWireMessages(List.of(um));
+        Map<String, Object> user = wire.get(0);
+        assertTrue(user.get("content") instanceof List, "多模态 content 须为块数组");
+        List<Map<String, Object>> parts = (List<Map<String, Object>>) user.get("content");
+        assertTrue(parts.stream().anyMatch(p -> "text".equals(p.get("type"))));
+        Map<String, Object> img = parts.stream().filter(p -> "image_url".equals(p.get("type"))).findFirst().orElseThrow();
+        String url = (String) ((Map<String, Object>) img.get("image_url")).get("url");
+        assertTrue(url.startsWith("data:image/png;base64,aGVsbG8="), "图像须为 base64 data URL: " + url);
+    }
 }

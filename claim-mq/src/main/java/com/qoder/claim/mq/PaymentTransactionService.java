@@ -42,14 +42,18 @@ public class PaymentTransactionService {
         ExecutorService executor = new ThreadPoolExecutor(2, 4, 60, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(200), r -> new Thread(r, "pay-tx-check"));
         producer.setExecutorService(executor);
-        producer.setTransactionListener(new TransactionListener() {
+        producer.setTransactionListener(newListener(localExecutor, checkExecutor));
+    }
+
+    static TransactionListener newListener(LocalExecutor localExecutor, CheckExecutor checkExecutor) {
+        return new TransactionListener() {
             @Override
             public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {
                 PayArgs a = (PayArgs) arg;
                 try {
-                    return state(localExecutor.execute(a.idemKey, a.caseNo, a.batch, a.amountCents, a.fundChannel));
+                    return state(localExecutor.execute(a.idemKey(), a.caseNo(), a.batch(), a.amountCents(), a.fundChannel()));
                 } catch (Exception e) {
-                    log.error("支付本地事务异常 idem={}", a.idemKey, e);
+                    log.error("支付本地事务异常 idem={}", a.idemKey(), e);
                     return LocalTransactionState.UNKNOW;
                 }
             }
@@ -61,7 +65,7 @@ public class PaymentTransactionService {
                 log.info("支付事务回查 idem={} status={}", idemKey, status);
                 return state(status);
             }
-        });
+        };
     }
 
     private static LocalTransactionState state(String s) {
@@ -82,6 +86,6 @@ public class PaymentTransactionService {
         producer.sendMessageInTransaction(msg, args);
     }
 
-    private record PayArgs(String idemKey, String caseNo, int batch, long amountCents, String fundChannel) {
+    record PayArgs(String idemKey, String caseNo, int batch, long amountCents, String fundChannel) {
     }
 }

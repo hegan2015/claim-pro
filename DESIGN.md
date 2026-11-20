@@ -276,18 +276,18 @@ K8s + Helm：每类 agent 独立 Deployment（HPA 按 Task Queue 深度）；Tem
 
 ### 10.5 P0 实现简化清单（与目标架构的差异，如实标注）
 
-- **单 Task Queue**：P0 所有 activity 注册在 `claim-main` 单队列，4.1 的六队列物理隔离属 P1 部署拆分；
+- **Task Queue**：✅ 已拆六队列物理隔离（claim-core/intake/doc/assess/review/fraud，独立 worker 限流，§11.20）；生产 K8s 按队列独立 Deployment+HPA 属部署项；
 - **本地开发管道**：`claim.temporal.enabled=false` 时由 LocalPipelineRunner 以同构状态机跑流程，人工节点轮询 claim_approval 表（2s）代替 signal，等待窗口 30 分钟；重启后经 ApplicationReadyEvent 按案件状态续接等待节点（REPORTED/MATERIALS_PENDING/APPROVING/MANUAL），其余中间态告警不自动续接——生产一律 Temporal durable 恢复，无此限制（详见 §11.16）；
-- **欺诈评分**：P0 为确定性规则评分器（金额/历史/修理厂标记/深夜报案加权，§11.4），非模型推理；反欺诈 agent 仅做报告汇总；
+- **欺诈评分**：✅ 规则评分器 + XGBoost(JPMML) 模型适配器双策略（`claim.fraud.strategy`，默认 rules，§11.20）；模型为合成样本演示版，生产换真实标注案重训；反欺诈 agent 仅做报告汇总；
 - **报案结构化**：P0 为表单直填 + 可选 LLM 结构化增强（`/api/agent/intake`，503 降级不影响建案）；关键词提取用于确定性核心的免责事由与责任比例判定（§11.3/§11.6），非 LLM 职责；
-- **识别置信度**：P0 定损后固定置 0.9（无独立识别模型），生产由 F2 识别模型输出真实置信度并执行 <0.85 转人工；
-- **理算草案双跑**：P0 仅计算器单跑，F6 LLM 草案与双跑比对监控属 P1；
+- **识别置信度**：✅ 视觉定损（doc-vision 多模态端点）输出真实置信度 + <0.85 转人工门禁（§11.20）；未配视觉 Key 降级文本定损固定 0.9；真实影像调用待配 Key 验证；
+- **理算草案双跑**：✅ F6 LLM 草案 vs 计算器双跑，差异落 calc_dual_run + 监控 API（§11.20），降级单跑；
 - **支付**：P0 为模拟支付 activity + 双账本落库（事务消息链路代码完整，local 无 MQ 时直连账本），真实渠道对接属 P1；
-- **条款检索**：P0 无向量库，核保走确定性规则引擎（免责条款表）；
-- **复核**：P0 review agent 为按需 API（详情页「AI 复核」），未嵌入主流程强制门禁，F7 质疑自动触发深查属 P1；
+- **条款检索**：✅ Drools 10.2.0 规则包 + 条款原文向量 RAG（共享栈 Qdrant+本地 ONNX，§11.20）；多版本规则包按出险日加载属生产扩展；
+- **复核**：✅ F7 嵌入主流程强制门禁（claim-review 队列，质疑→MANUAL 深查，独立卷宗 R2，§11.20）+ 按需 API 保留；独立部署组属生产部署项；
 - **批处理调度**：mysql/default 档位已接 **XXL-Job 2.4.1**（调度中心 Docker :8094，执行器 claim-pro-executor :9999，图谱 02:30 / 金标 03:00，trigger_by=XXL_JOB）；local 零依赖档位由 Spring `@Scheduled` 兜底（`claim.batch.*-cron` 可配，条件装配防双调度）；启动各跑一次 + 手动 API 保留，失败不阻断主链路；XXL-Job 分片广播属 P1（§11.18/§11.19）；
-- **图谱存储**：P0 节点/边落关系库（graph_node/graph_edge）T+1 全量重建，修理厂关联来自 graph_case_shop 登记；生产 NebulaGraph + 实时增量属 P1；标记规则与回写语义不变；
-- **金标集规模**：P0 为 15 条核赔师标注案（gold-cases.json，覆盖三通道/三类法定免责/责任比例/限额/免赔/审批分级），纯代码重放不触碰 LLM；生产 ≥2000 案 + 影子双跑属 P1。
+- **图谱存储**：✅ 关系库 T+1 重建（对账基线）+ NebulaGraph 实时增量适配器（`claim.graph.nebula.enabled`，可选，§11.20）；单节点开发拓扑，生产集群化属部署项；标记规则与回写语义不变；
+- **金标集规模**：✅ 2018 案（18 手工 + 2000 合成，独立 Python oracle 推导期望值）+ 影子双跑 + 灰度发布（§11.20）；真实标注案替换合成集 + 2–4 周影子观察属上线运营项。
 
 ## 11. 业务流程设计详解（P0 实现，as-built）
 
@@ -643,22 +643,54 @@ PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + �
 
 **漂移检测验证**：单测篡改期望值（GOLD-001 金额/GOLD-002 通道）→ 精确报红 2 案；改路由阈值（fastLimitCents）→ 批量报红。
 
-**生产差异**：金标库扩充 ≥2000 案、影子双跑 2–4 周（§9 发布流水线）；XXL-Job 日终调度已落地。
+**生产差异**：金标库已扩充至 2018 案（18 手工 + 2000 合成，§11.20）；影子双跑与灰度发布已落地（§11.20）；真实标注案替换与 2–4 周影子观察属上线运营项。
 
-**实现**：claim-gateway/.../batch/GoldRegressionService.java、GoldCase.java、gold-cases.json；单测 GoldRegressionTest 3/3。
+**实现**：claim-gateway/.../batch/GoldRegressionService.java、GoldCase.java、gold-cases.json、gold-cases-extended.json；单测 GoldRegressionTest。
 
-## 12. 验证结果（2026-11-18）
+### 11.20 第二轮增强（2026-11-20，as-built）
+
+> 用户拍板「先做前三档」优化清单（B3 支付渠道适配器除外）。以下全部落地并实测，默认配置保持零额外依赖（增强项开关默认关闭）。
+
+**① 确定性安全网（批次 A）**
+- **定损门禁** `AssessGate`（claim-workflow，纯函数，金标共用）：估损≤0 → MANUAL；描述索赔金额 > 估损×3（`claim.gate.divergence-ratio`）→ MANUAL；识别置信度 < 0.85 → MANUAL。堵 A7FB24「零估损走 FAST 零赔付结案」空子。索赔金额提取 `DescriptionRules.claimedAmountCents`（正则「索赔X万/元」）。
+- **人工批准金额校验**：`CaseService.humanDecision` 服务端拒绝 MANUAL_HANDLE approved 且 amount≤0（`InvalidDecisionException`→400），前端两表单同步拦截。堵 06BF2C「批准但金额0误拒赔」。
+- **评分时序**：本地管道先定损后评分；Temporal 并行后以最终估损重评——金额加分项（+25/+10）真实生效。金标重放本就用最终估损，期望值不变。
+- **材料幂等去重**：元数据登记按 案+类型+SHA256 去重；文件上传同内容返回原材料。
+- **材料迁移工具**：`POST /api/admin/materials/migrate?direction=local-to-minio|minio-to-local`，逐文件读源→复核哈希→写目标→读回复核，幂等可重跑；实测修复 78FE4E 孤儿文件。
+
+**② 编排与资金（批次 B）**
+- **六队列物理隔离**（`ClaimQueues`）：claim-core（工作流+确定性 activity）/intake/doc/assess/review/fraud，每队列独立 worker + `maxConcurrentActivityExecutionSize` 限流（`claim.temporal.*-concurrency`）。定损/通知/复核 stub 路由到对应队列，Temporal 历史实证 claim-assess/core/intake/review 真实分发。
+- **事务消息回查演练**：`PaymentTransactionService.newListener` 抽为可测工厂，单测覆盖 COMMIT/ROLLBACK/UNKNOWN 三态 + 本地事务异常→UNKNOWN→回查补决策；default 档实测 pay_outbox COMMITTED。
+- **修复两个潜伏缺陷**（default 档首次真跑暴露）：`decisionEventConsumer` Bean 名与组件重名→改 `decisionEventPushConsumer`；`DefaultMQProducer` 双 Bean 歧义→`@Qualifier("claimProducer")`。
+
+**③ 模型与智能化（批次 C）**
+- **F7 复核强制门禁**：理算后 `reviewGate` activity（claim-review 队列），独立卷宗（不含 F5 推理，R2），质疑非空→MANUAL 深查；模型不可用降级跳过（确定性结论不受影响）。实测拦截 70 字节冒烟图片弱证据。
+- **F6 理算双跑**：`CalcDraftAgent` 草案 vs 计算器，差异落 `calc_dual_run` 表 + `GET /api/calc-dual-run/stats|recent`；降级单跑。实测草案 ¥3,280 == 计算器。
+- **F2 视觉定损**：`VisionAssessService`（doc-vision 端点，OpenAI 兼容多模态，可配百炼 qwen-vl-max）；照片→部件识别→价格库定价（价格仍确定性）；真实置信度写回案件；网关 wire 格式扩展 image_url 块 + 脱敏兼容多模态。未配视觉 Key 降级文本定损（置信度 0.9）。**真实视觉调用待配视觉 Key 验证**。
+- **F3 Drools + 条款 RAG**：`CoverageRuleEngine` 改 Drools 10.2.0 规则包（rules/clause-2026-v1.drl，JDK 26 实测）；条款原文库 clause_text（8 条）向量化入共享栈 Qdrant（collection claim_clauses）+ 本地 ONNX embedding；`POST /api/agent/coverage-explain/{no}` 按条款码直查 + 语义检索补充，解释引用原文；`GET /api/clauses/search`。容器不可达降级条款码直查。
+- **F4 XGBoost + NebulaGraph**：`FraudScoringStrategy` 接口 + `ModelFraudScorer`（JPMML 1.7.8 加载 fraud-model.pmml）+ `FraudScoringRouter`（`claim.fraud.strategy=rules|model`，不可用回退）；模型由 deploy/model/train_fraud_model.py 合成样本训练（**演示模型，生产换真实标注案重训**）；金标始终用规则评分器。NebulaGraph 实时图（deploy/nebula-compose.yml 单节点栈，`claim.graph.nebula.enabled`）：报案增量 upsert + T+1 全量同步对账；实测 47 顶点/53 边 + 增量 48。
+- **金标 ≥2000 + 影子 + 灰度**：gold-cases-extended.json 2000 合成案（deploy/gold/generate_gold_cases.py **独立 Python oracle 按需求规则推导期望值**，非代码反算），合计 2018 案零漂移；`ShadowReplayService`（POST /api/shadow/run 候选阈值重放历史案统计漂移，shadow_run 表）；`CanaryService`（案件号 CRC32 分桶 + 机构/险种白名单 + 候选阈值，GET/POST /api/canary/config 运行时调整，ROUTE 证据记 canaryGroup）。实测灰度 100% + 候选快赔阈值¥100 → 原 FAST 案切 STANDARD。
+
+**④ 管理台 UI**：风控批处理页增 理算双跑监控/影子双跑/灰度发布/图存储与评分引擎 四卡片，金标数动态 2018，逐案明细限 100 行；独立页签结构化实测交互通过。
+
+**生产差异（如实标注）**：视觉定损真实调用待配 Key；XGBoost 为合成样本演示模型；NebulaGraph 单节点开发拓扑（生产集群化）；灰度为配置驱动流量分桶原型（生产接发布流水线）；合成金标待真实标注案替换。
+
+## 12. 验证结果（2026-11-20 第二轮增强后）
 
 | 项 | 结果 |
 |---|---|
-| 单元测试 `./mvnw test` | 28/28（脱敏/模型网关/计算器/双账本幂等/审批分级/核保规则/描述规则 2/图谱构建 4/金标回归 3） |
-| 端到端冒烟 `smoke-test.py` | 19/19（报案→补件→决策→结案→双账本→事件链→证据链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归 15 案零漂移/逐案结果） |
-| 浏览器闭环实测 | 报案→补件→审批/驳回→结案、异议升级、AI 503 降级、移动布局；风控批处理页渲染+立即构建/执行回归交互（mysql 档位） |
-| 重启恢复 | local 管道等待节点续接实测通过 |
-| MySQL 切库 | 14 表 H2→MySQL 迁移逐表行数校验全 OK（16 案/129 证据/133 决策），H2 文件只读保留作备份；20 表 DDL+种子；专用账号 claim；切库后冒烟 19/19、证据链校验通过 |
-| 金标漂移检测 | 篡改期望值精确报红 2 案；改路由阈值批量报红（单测验证） |
-| XXL-Job 调度 | 调度中心 2.4.1（Docker :8094，ops-pro 纳管）登录验证；执行器 claim-pro-executor :9999 自动注册心跳入库；两任务（02:30/03:00）手动触发 trigger/handle 均 200，graph_build_run/gold_run 落 trigger_by=XXL_JOB 行（金标 15/15）；local 档位 Spring cron 条件兜底防双调度 |
-| 中间件 | ops-pro claim-shared 栈全 RUNNING（含 XXL-Job 调度中心）；MinIO 源码构建 + S3 建桶/传/读/删往返实测 |
-| 事务消息回查演练 | 属生产档位验证项（§11 验证计划 3），local/mysql 无 MQ 不涉及 |
+| 单元测试 `./mvnw test` | **53/53**（原 28 + 门禁 4 + 索赔/车型提取 + 金标门禁漂移 + 回查演练 4 + 多模态 wire + 视觉消息 + XGBoost/JPMML 4 + 灰度 6） |
+| 端到端冒烟 `smoke-test.py` | **39/39**（mysql 档）：原链路 + 材料幂等去重 + 定损门禁/金额校验 + 双跑/复核/视觉留痕 + 条款 RAG/核保解释 + 金标 2018 零漂移 + 影子漂移检测 + 灰度配置 |
+| default 全栈档冒烟 | **31/31**（Temporal+RocketMQ+MinIO）：材料走 MinIO、支付走事务消息（outbox COMMITTED）、事件经 MQ 消费归档（最终一致等待） |
+| Temporal durable 恢复 | APPROVING 等待节点跨应用重启续接审批→CLOSED 实测；队列分发 claim-assess/core/intake/review 历史实证 |
+| 事务消息回查演练 | 单测三态 + 异常→UNKNOWN→补决策；default 档 outbox COMMITTED 实证 |
+| 灰度路由实证 | 100% 灰度 + 候选快赔阈值 → canaryGroup=CANARY、通道 FAST→STANDARD |
+| NebulaGraph | 全量同步 47 顶点/53 边、增量 48、status healthy（增强档实测后还原默认关闭） |
+| XGBoost 评分 | strategy=XGBOOST 真实管道留痕；模型/规则基线偏差有限单测 |
+| 条款 RAG | 8 条索引入 claim_clauses；「酒后驾车能赔吗」语义命中 EXCL-DRUNK；核保解释引用原文 |
+| 管理台 UI | 批处理页四新卡片渲染 + 影子双跑按钮（29 案漂移 1）+ 灰度表单保存/还原，独立页签实测后关闭 |
+| 材料迁移 | local↔MinIO 双向 + 幂等重跑实测，修复 78FE4E 孤儿文件（查看 200） |
 
-验证计划（生产档位）：compose 起基础设施 → 冒烟全链路 → kill 进程半消息回查补 COMMIT → Temporal 断点续跑 → 断模型端点纯人工降级演练 → 金标集回归。
+> 上一轮（2026-11-18）验证：单测 28/28、冒烟 24/24×本地+MinIO 双形态、MySQL 切库 14 表行数校验、XXL-Job 调度实测，见 git 历史与 COLLABORATION。
+
+验证计划（生产上线）：真实标注金标替换合成集 → 影子 2–4 周观察 → 灰度 5%→25%→100% → 视觉 Key 配置后真实影像验证 → XGBoost 真实数据重训 → NebulaGraph 集群化。

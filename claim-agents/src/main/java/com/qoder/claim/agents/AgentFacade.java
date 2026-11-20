@@ -22,6 +22,7 @@ public class AgentFacade {
     private final FraudReportAgent fraudReport;
     private final ReviewAgent review;
     private final NotifyAgent notify;
+    private final CalcDraftAgent calcDraft;
 
     public AgentFacade(AgentFactory factory, AssessTools assessTools, ReviewTools reviewTools) {
         this.factory = factory;
@@ -31,6 +32,7 @@ public class AgentFacade {
         this.fraudReport = factory.build(FraudReportAgent.class, "fraud-report");
         this.review = factory.build(ReviewAgent.class, "review", reviewTools);
         this.notify = factory.build(NotifyAgent.class, "notify");
+        this.calcDraft = factory.build(CalcDraftAgent.class, "calc-draft");
     }
 
     public boolean available(String agentType) {
@@ -73,6 +75,10 @@ public class AgentFacade {
 
     public String notifyReply(String stateAndQuestionJson) {
         return guard("notify", () -> notify.reply(stateAndQuestionJson));
+    }
+
+    public String calcDraft(String inputsJson) {
+        return guard("calc-draft", () -> calcDraft.draft(inputsJson));
     }
 
     private <T> T guard(String agentType, java.util.function.Supplier<T> call) {

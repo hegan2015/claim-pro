@@ -27,7 +27,7 @@
 cd claim-pro
 ./run.sh                    # 默认 mysql profile：MySQL claim 库 + 本地管道（需 claim-shared-mysql 运行中）
 # 就绪后打开 http://127.0.0.1:8097/
-python3 smoke-test.py       # 端到端冒烟 24 项（可选，验证全链路+材料文件+批处理）
+python3 smoke-test.py       # 端到端冒烟 39 项（可选，验证全链路+材料+门禁+双跑+RAG+金标2018+影子+灰度）
 ./stop.sh                   # 停止服务（不删数据）
 ```
 
@@ -121,6 +121,43 @@ python3 smoke-test.py       # 端到端冒烟 24 项（可选，验证全链路+
 - **调度**：mysql/default 档位由 **XXL-Job 调度中心**（:8094，ops-pro 纳管）接管——图谱每日 02:30（graphBuildJobHandler）、金标每日 03:00（goldRegressionJobHandler），执行器 claim-pro-executor :9999 自动注册；local 零依赖档位 Spring cron 兜底（`claim.batch.graph-cron` / `claim.batch.gold-cron` 可配）。启动各跑一次 + 手动 API 保留；失败只记日志不阻断主链路。
 - 仪表盘「金标回归 15/15 · 批处理中心 →」状态行直达本页。
 - 生产差异：NebulaGraph 图存储 + 金标库 ≥2000 案（DESIGN §11.18/§11.19）；XXL-Job 日终调度已落地（运维见第 6 节）。
+
+### 3.8 第二轮增强运营位（2026-11-20，风控批处理页）
+
+风控批处理页新增四卡片（DESIGN §11.20）：
+
+- **理算双跑监控**：F6 LLM 草案 vs 计算器一致率/差异数（calc_dual_run）。最终金额以计算器为准，差异供监控。
+- **影子双跑**：「执行影子双跑」用候选阈值重放历史案统计漂移（不影响生产）。上线新阈值前先跑。API 可传候选阈值：`POST /api/shadow/run {"riskLow":20,"fastLimitCents":300000}`。
+- **灰度发布**：启用开关 + 比例（%）+ 候选快赔阈值（元），保存即生效（运行时）。案件号 CRC32 分桶 + 机构/险种白名单；CANARY 组用候选阈值，BASELINE 与金标不受影响。`GET/POST /api/canary/config`。
+- **图存储与评分引擎**：显示欺诈评分策略（RULES/XGBOOST）与 NebulaGraph 状态。
+
+增强项开关（默认全关，零额外依赖；配置在 `~/.config/claim-pro/claim.properties` 或环境变量）：
+
+```bash
+# XGBoost 模型评分（演示模型，生产换真实标注案重训 deploy/model/train_fraud_model.py）
+CLAIM_FRAUD_STRATEGY=model ./run.sh
+# NebulaGraph 实时图（须先起扩展栈）
+docker compose -f deploy/nebula-compose.yml up -d     # 镜像经 daocloud 拉取后 retag vesoft/nebula-*:v3.6.0
+CLAIM_GRAPH_NEBULA=true ./run.sh
+curl -s http://127.0.0.1:8097/api/graph/nebula/status  # {"enabled":true,"healthy":true,"caseVertices":N}
+# 视觉定损（配 doc-vision 端点 Key，如百炼 qwen-vl-max；不配降级文本定损）
+# claim.llm.routes.doc-vision.base-url/model/api-key 三行齐全
+```
+
+材料文件存储切换迁移（切 claim.minio.enabled 前先跑，避免孤儿文件）：
+
+```bash
+curl -s -X POST 'http://127.0.0.1:8097/api/admin/materials/migrate?direction=local-to-minio'
+curl -s -X POST 'http://127.0.0.1:8097/api/admin/materials/migrate?direction=minio-to-local'
+# 返回 {total,copied,skipped,failed}；幂等可重跑；须配 claim.minio.access-key/secret-key
+```
+
+条款 RAG 与核保解释：
+
+```bash
+curl -s 'http://127.0.0.1:8097/api/clauses/search?q=酒后驾车能赔吗'   # 语义检索条款原文
+curl -s -X POST http://127.0.0.1:8097/api/agent/coverage-explain/<案件号>  # 引用条款原文的解释
+```
 
 ## 4. 服务运维（claim-pro）
 
@@ -286,12 +323,12 @@ docker exec -i claim-shared-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --defaul
 
 ```bash
 cd claim-pro
-./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?     # 单测 28 项（脱敏/网关/计算器/双账本审批/核保/描述规则/图谱/金标）
-python3 smoke-test.py                            # 冒烟 24 项，需服务已启动
+./mvnw test > /tmp/t.log 2>&1; echo EXIT=$?     # 单测 53 项（含门禁/回查演练/多模态/XGBoost/灰度）
+python3 smoke-test.py                            # 冒烟 39 项，需服务已启动
 python3 smoke-test.py http://127.0.0.1:8097      # 显式指定地址
 ```
 
-冒烟覆盖：健康→运行时→报案建案→材料文件上传/读回校验/仅登记与非法扩展名拒绝→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计→图谱构建/摘要/邻域→金标回归零漂移/逐案结果。
+冒烟覆盖：健康→运行时→报案建案→材料文件上传/读回/幂等去重/仅登记与非法扩展名拒绝→补件→管道推进→人工决策→结案→赔付金额→双账本→事件链→证据哈希链→审计→对账零差异→统计→定损门禁（空定损/索赔背离/金额0拒绝）→双跑/复核/视觉留痕→条款RAG/核保解释→图谱构建/摘要/邻域→金标2018零漂移/逐案→影子双跑漂移检测→灰度配置。default 全栈档另跑 31 项（Temporal+MQ+MinIO）。
 
 批处理手工验证：
 
@@ -299,7 +336,7 @@ python3 smoke-test.py http://127.0.0.1:8097      # 显式指定地址
 curl -s -X POST http://127.0.0.1:8097/api/graph/build     # 立即构建（返回节点/边/新标记数）
 curl -s http://127.0.0.1:8097/api/graph/summary           # 修理厂风险表
 curl -s http://127.0.0.1:8097/api/graph/case/<案件号>      # 案件邻域（同厂兄弟案）
-curl -s -X POST http://127.0.0.1:8097/api/gold/run        # 执行回归（15/15 为零漂移）
+curl -s -X POST http://127.0.0.1:8097/api/gold/run        # 执行回归（2018/2018 为零漂移）
 curl -s http://127.0.0.1:8097/api/gold/latest             # 最近运行+逐案结果
 ```
 
@@ -366,6 +403,13 @@ POST /api/claims/{no}/dispute             异议升级（reason）
 GET  /api/claims/{no}/evidence/verify     证据哈希链校验
 GET  /api/claims/{no}/tool-audit          工具调用审计
 POST /api/recon/run · GET /api/recon/diffs  对账
+POST /api/admin/materials/migrate?direction=  材料文件存储迁移（local-to-minio/minio-to-local）
+GET  /api/calc-dual-run/stats · /api/calc-dual-run/recent  理算双跑监控
+POST /api/shadow/run · GET /api/shadow/latest  影子双跑（候选阈值重放）
+GET  /api/canary/config · POST /api/canary/config  灰度发布配置
+GET  /api/fraud/strategy · /api/graph/nebula/status  评分策略 / Nebula 状态
+GET  /api/clauses/search?q=  条款语义检索
+POST /api/agent/coverage-explain/{no}  核保解释（引用条款原文）
 POST /api/graph/build                     图谱立即构建（MANUAL）
 GET  /api/graph/summary                   图谱摘要（最近运行+修理厂风险表）
 GET  /api/graph/case/{no}                 案件邻域（一跳+同厂兄弟案）

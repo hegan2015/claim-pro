@@ -23,9 +23,18 @@ public interface ClaimActivities {
     /** agent 不可用时抛 AgentUnavailableException，workflow 降级 MANUAL 通道。 */
     AssessResult assess(String caseNo);
 
+    /** 定损门禁：空定损/索赔背离返回转人工原因，放行返回 null。 */
+    String assessGate(String caseNo);
+
     Channel route(String caseNo, int riskScore, long estimateCents);
 
     CalcResult calculate(String caseNo);
+
+    /** F6 双跑：LLM 草案 vs 计算器，差异落 calc_dual_run；模型不可用降级跳过，不阻塞。 */
+    void calcDualRun(String caseNo);
+
+    /** F7 独立复核门禁：质疑非空返回转人工原因；通过/模型不可用降级返回 null。 */
+    String reviewGate(String caseNo);
 
     int requiredApprovers(String caseNo);
 

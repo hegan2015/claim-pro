@@ -160,6 +160,19 @@ public class LlmGatewayClient {
             Object content = copy.get("content");
             if (content instanceof String s) {
                 copy.put("content", masking.mask(s));
+            } else if (content instanceof List<?> parts) {
+                // 多模态消息：只脱敏文本块，图像块原样（base64 不含可识别文本）
+                List<Object> masked = new ArrayList<>(parts.size());
+                for (Object p : parts) {
+                    if (p instanceof Map<?, ?> pm && "text".equals(pm.get("type")) && pm.get("text") instanceof String t) {
+                        Map<Object, Object> mc = new LinkedHashMap<>(pm);
+                        mc.put("text", masking.mask(t));
+                        masked.add(mc);
+                    } else {
+                        masked.add(p);
+                    }
+                }
+                copy.put("content", masked);
             }
             out.add(copy);
         }

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Configuration
-@EnableConfigurationProperties({TemporalProperties.class, RouteProperties.class})
+@EnableConfigurationProperties({TemporalProperties.class, RouteProperties.class, AssessGateProperties.class, CanaryProperties.class})
 public class TemporalConfig {
 
     @Bean(destroyMethod = "shutdown")
@@ -43,10 +43,22 @@ public class TemporalConfig {
     @Bean
     @ConditionalOnProperty(prefix = "claim.temporal", name = "enabled", havingValue = "true", matchIfMissing = true)
     public Worker claimWorker(WorkerFactory factory, TemporalProperties props, ClaimActivitiesImpl activities) {
-        Worker worker = factory.newWorker(props.getTaskQueue());
-        worker.registerWorkflowImplementationTypes(ClaimWorkflowImpl.class);
-        worker.registerActivitiesImplementations(activities);
-        return worker;
+        // 六队列物理隔离（DESIGN 4.1）：每队列独立 worker + 独立并发限流；
+        // activity 实现同一份，路由由 workflow 侧 stub 的 taskQueue 决定。
+        Worker core = factory.newWorker(props.getTaskQueue(),
+                io.temporal.worker.WorkerOptions.newBuilder()
+                        .setMaxConcurrentActivityExecutionSize(props.getCoreConcurrency()).build());
+        core.registerWorkflowImplementationTypes(ClaimWorkflowImpl.class);
+        core.registerActivitiesImplementations(activities);
+        int[] concurrency = {props.getIntakeConcurrency(), props.getDocConcurrency(), props.getAssessConcurrency(),
+                props.getReviewConcurrency(), props.getFraudConcurrency()};
+        String[] queues = {ClaimQueues.INTAKE, ClaimQueues.DOC, ClaimQueues.ASSESS, ClaimQueues.REVIEW, ClaimQueues.FRAUD};
+        for (int i = 0; i < queues.length; i++) {
+            Worker w = factory.newWorker(queues[i], io.temporal.worker.WorkerOptions.newBuilder()
+                    .setMaxConcurrentActivityExecutionSize(concurrency[i]).build());
+            w.registerActivitiesImplementations(activities);
+        }
+        return core;
     }
 
     @Bean

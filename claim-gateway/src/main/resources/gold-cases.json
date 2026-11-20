@@ -208,5 +208,47 @@
     "lateNightReport": false,
     "recognitionConfidence": 0.9,
     "expected": {"covered": true, "exclusions": [], "riskScore": 25, "channel": "INVESTIGATE", "payableCents": 10750000, "requiredApprovers": 2}
+  },
+  {
+    "id": "GOLD-016",
+    "name": "空定损强制转人工（估损0不得走FAST零赔付结案）",
+    "policy": {"policyNo": "P-GOLD-A", "effectiveDate": "2026-01-01", "expiryDate": "2026-12-31", "coverageTypes": ["COLLISION", "THEFT", "FLOOD", "FIRE"], "limitCents": 200000000, "deductibleCents": 50000, "depreciationPercent": 10, "clauseVersion": "clause-2026-v1"},
+    "accidentDate": "2026-11-18",
+    "accidentType": "COLLISION",
+    "description": "夜间碰撞，修理厂异常，本车全责",
+    "estimateCents": 0,
+    "priorClaims": 0,
+    "flaggedRepairShop": false,
+    "lateNightReport": false,
+    "recognitionConfidence": 0.9,
+    "expected": {"covered": true, "exclusions": [], "riskScore": 0, "channel": "MANUAL", "payableCents": 0, "requiredApprovers": 0}
+  },
+  {
+    "id": "GOLD-017",
+    "name": "描述索赔与估损严重背离强制转人工（索赔6.8万 vs 估损4200）",
+    "policy": {"policyNo": "P-GOLD-A", "effectiveDate": "2026-01-01", "expiryDate": "2026-12-31", "coverageTypes": ["COLLISION", "THEFT", "FLOOD", "FIRE"], "limitCents": 200000000, "deductibleCents": 50000, "depreciationPercent": 10, "clauseVersion": "clause-2026-v1"},
+    "accidentDate": "2026-11-18",
+    "accidentType": "COLLISION",
+    "description": "大众朗逸2023款追尾，前保险杠受损，索赔6.8万，本车全责",
+    "estimateCents": 420000,
+    "priorClaims": 0,
+    "flaggedRepairShop": false,
+    "lateNightReport": false,
+    "recognitionConfidence": 0.9,
+    "expected": {"covered": true, "exclusions": [], "riskScore": 0, "channel": "MANUAL", "payableCents": 0, "requiredApprovers": 0}
+  },
+  {
+    "id": "GOLD-018",
+    "name": "背离门禁边界：索赔恰为估损3倍不触发（严格大于才拦）",
+    "policy": {"policyNo": "P-GOLD-A", "effectiveDate": "2026-01-01", "expiryDate": "2026-12-31", "coverageTypes": ["COLLISION", "THEFT", "FLOOD", "FIRE"], "limitCents": 200000000, "deductibleCents": 50000, "depreciationPercent": 10, "clauseVersion": "clause-2026-v1"},
+    "accidentDate": "2026-11-18",
+    "accidentType": "COLLISION",
+    "description": "大众朗逸2023款追尾，前保险杠与左前大灯受损，索赔1.26万，本车全责",
+    "estimateCents": 420000,
+    "priorClaims": 0,
+    "flaggedRepairShop": false,
+    "lateNightReport": false,
+    "recognitionConfidence": 0.9,
+    "expected": {"covered": true, "exclusions": [], "riskScore": 0, "channel": "FAST", "payableCents": 328000, "requiredApprovers": 0}
   }
 ]

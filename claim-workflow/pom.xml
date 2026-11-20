@@ -28,6 +28,10 @@
             <artifactId>claim-mq</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.qoder.claim</groupId>
+            <artifactId>claim-infra</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.temporal</groupId>
             <artifactId>temporal-sdk</artifactId>
         </dependency>

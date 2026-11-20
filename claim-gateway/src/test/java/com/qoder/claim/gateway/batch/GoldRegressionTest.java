@@ -6,6 +6,7 @@ import com.qoder.claim.core.approval.ApprovalService;
 import com.qoder.claim.core.calc.ClaimCalculator;
 import com.qoder.claim.core.fraud.FraudScorer;
 import com.qoder.claim.core.rule.CoverageRuleEngine;
+import com.qoder.claim.workflow.AssessGateProperties;
 import com.qoder.claim.workflow.RouteProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,20 +32,20 @@ class GoldRegressionTest {
         jdbc.execute("CREATE TABLE gold_run(id BIGINT AUTO_INCREMENT PRIMARY KEY, ts BIGINT, trigger_by VARCHAR(16), total INT, passed INT, failed INT, duration_ms BIGINT)");
         jdbc.execute("CREATE TABLE gold_case_result(id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id BIGINT, gold_id VARCHAR(32), name VARCHAR(128), passed INT, mismatches_json VARCHAR(2000), ts BIGINT)");
         gold = new GoldRegressionService(new CoverageRuleEngine(), new ClaimCalculator(), new FraudScorer(),
-                new ApprovalService(jdbc), new RouteProperties(), jdbc);
+                new ApprovalService(jdbc), new RouteProperties(), new AssessGateProperties(), jdbc);
     }
 
     @Test
     void allGoldCasesPass() {
         Map<String, Object> r = gold.run("TEST");
-        assertEquals(15, r.get("total"));
-        assertEquals(15, r.get("passed"));
+        assertEquals(2018, r.get("total"));
+        assertEquals(2018, r.get("passed"));
         assertEquals(0, r.get("failed"));
         Map<String, Object> latest = gold.latest();
         assertNotNull(latest.get("run"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> results = (List<Map<String, Object>>) latest.get("results");
-        assertEquals(15, results.size());
+        assertEquals(2018, results.size());
         assertTrue(results.stream().allMatch(x -> Integer.valueOf(1).equals(Rows.val(x, "passed"))));
         assertEquals(1, gold.history().size());
     }
@@ -55,7 +56,7 @@ class GoldRegressionTest {
         cases.get(0).expected.put("payableCents", 999999); // 篡改 GOLD-001 期望金额
         cases.get(1).expected.put("channel", "FAST");       // 篡改 GOLD-002 期望通道
         GoldRegressionService tampered = new GoldRegressionService(new CoverageRuleEngine(), new ClaimCalculator(),
-                new FraudScorer(), new ApprovalService(jdbc), new RouteProperties(), jdbc, cases);
+                new FraudScorer(), new ApprovalService(jdbc), new RouteProperties(), new AssessGateProperties(), jdbc, cases);
         Map<String, Object> r = tampered.run("TEST");
         assertEquals(2, r.get("failed"));
         List<Map<String, Object>> mismatches = tampered.replay(cases.get(0));
@@ -68,9 +69,19 @@ class GoldRegressionTest {
         RouteProperties drifted = new RouteProperties();
         drifted.setFastLimitCents(100000); // 快赔阈值收紧 → GOLD-001 不再 FAST
         GoldRegressionService svc = new GoldRegressionService(new CoverageRuleEngine(), new ClaimCalculator(),
-                new FraudScorer(), new ApprovalService(jdbc), drifted, jdbc, loadFixture());
+                new FraudScorer(), new ApprovalService(jdbc), drifted, new AssessGateProperties(), jdbc, loadFixture());
         Map<String, Object> r = svc.run("TEST");
         assertTrue((Integer) r.get("failed") > 0);
+    }
+
+    @Test
+    void gateDisabledIsDetected() throws Exception {
+        AssessGateProperties off = new AssessGateProperties();
+        off.setEnabled(false); // 关闭门禁 → GOLD-016/017 空定损/背离案不再 MANUAL，精确报红
+        GoldRegressionService svc = new GoldRegressionService(new CoverageRuleEngine(), new ClaimCalculator(),
+                new FraudScorer(), new ApprovalService(jdbc), new RouteProperties(), off, jdbc, loadFixture());
+        Map<String, Object> r = svc.run("TEST");
+        assertEquals(2, r.get("failed"));
     }
 
     private static List<GoldCase> loadFixture() throws Exception {

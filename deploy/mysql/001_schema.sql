@@ -232,3 +232,35 @@ CREATE TABLE IF NOT EXISTS gold_case_result (
     ts BIGINT,
     INDEX idx_gold_result_run (run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS calc_dual_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    case_no VARCHAR(40),
+    calc_payable_cents BIGINT,
+    draft_payable_cents BIGINT,
+    diff_cents BIGINT,
+    is_match INT,
+    draft_json VARCHAR(2000),
+    ts BIGINT,
+    INDEX idx_dual_run_case (case_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS clause_text (
+    clause_id VARCHAR(40) PRIMARY KEY,
+    version VARCHAR(32),
+    code VARCHAR(40),
+    title VARCHAR(128),
+    body VARCHAR(2000),
+    effective_from DATE,
+    effective_to DATE,
+    INDEX idx_clause_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS shadow_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ts BIGINT,
+    config_json VARCHAR(1000),
+    total INT,
+    drift_count INT,
+    samples_json TEXT,
+    duration_ms BIGINT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

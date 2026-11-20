@@ -37,7 +37,9 @@ public class MqConfig {
 
     @Bean
     @ConditionalOnProperty(prefix = "claim.mq", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public EventPublisher rocketMqEventPublisher(DefaultMQProducer producer, MqProperties props) {
+    public EventPublisher rocketMqEventPublisher(
+            @org.springframework.beans.factory.annotation.Qualifier("claimProducer") DefaultMQProducer producer,
+            MqProperties props) {
         return new RocketMqEventPublisher(producer, props);
     }
 
@@ -58,7 +60,7 @@ public class MqConfig {
 
     @Bean(initMethod = "start", destroyMethod = "shutdown")
     @ConditionalOnProperty(prefix = "claim.mq", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DefaultMQPushConsumer decisionEventConsumer(MqProperties props, DecisionEventConsumer listener) {
+    public DefaultMQPushConsumer decisionEventPushConsumer(MqProperties props, DecisionEventConsumer listener) {
         DefaultMQPushConsumer c = new DefaultMQPushConsumer(props.getConsumerGroup());
         c.setNamesrvAddr(props.getNamesrv());
         try {

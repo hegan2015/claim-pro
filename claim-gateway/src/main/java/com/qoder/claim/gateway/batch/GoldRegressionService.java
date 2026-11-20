@@ -42,36 +42,51 @@ public class GoldRegressionService {
     private final FraudScorer fraud;
     private final ApprovalService approval;
     private final RouteProperties route;
+    private final com.qoder.claim.workflow.AssessGateProperties gate;
     private final JdbcTemplate jdbc;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
     private final List<GoldCase> goldCases;
 
     @Autowired
     public GoldRegressionService(CoverageRuleEngine coverage, ClaimCalculator calculator, FraudScorer fraud,
-                                 ApprovalService approval, RouteProperties route, JdbcTemplate jdbc) {
-        this(coverage, calculator, fraud, approval, route, jdbc, loadClasspath());
+                                 ApprovalService approval, RouteProperties route,
+                                 com.qoder.claim.workflow.AssessGateProperties gate, JdbcTemplate jdbc) {
+        this(coverage, calculator, fraud, approval, route, gate, jdbc, loadClasspath());
     }
 
     GoldRegressionService(CoverageRuleEngine coverage, ClaimCalculator calculator, FraudScorer fraud,
-                          ApprovalService approval, RouteProperties route, JdbcTemplate jdbc, List<GoldCase> goldCases) {
+                          ApprovalService approval, RouteProperties route,
+                          com.qoder.claim.workflow.AssessGateProperties gate, JdbcTemplate jdbc, List<GoldCase> goldCases) {
         this.coverage = coverage;
         this.calculator = calculator;
         this.fraud = fraud;
         this.approval = approval;
         this.route = route;
+        this.gate = gate;
         this.jdbc = jdbc;
         this.goldCases = goldCases;
     }
 
     private static List<GoldCase> loadClasspath() {
-        try (InputStream in = GoldRegressionService.class.getResourceAsStream("/gold-cases.json")) {
+        List<GoldCase> all = new ArrayList<>();
+        all.addAll(loadResource("/gold-cases.json"));
+        // 扩充合成金标（≥2000，期望值由需求规则独立推导，见 deploy/gold/generate_gold_cases.py）
+        all.addAll(loadResource("/gold-cases-extended.json"));
+        return all;
+    }
+
+    private static List<GoldCase> loadResource(String path) {
+        try (InputStream in = GoldRegressionService.class.getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("金标数据集缺失: classpath:gold-cases.json");
+                if (path.contains("extended")) {
+                    return List.of(); // 扩充集可选
+                }
+                throw new IllegalStateException("金标数据集缺失: classpath:" + path);
             }
             return new ObjectMapper().findAndRegisterModules().readValue(in, new TypeReference<List<GoldCase>>() {
             });
         } catch (IOException e) {
-            throw new IllegalStateException("金标数据集加载失败", e);
+            throw new IllegalStateException("金标数据集加载失败: " + path, e);
         }
     }
 
@@ -140,14 +155,22 @@ public class GoldRegressionService {
         actual.put("exclusions", d.getExclusions());
         if (d.isCovered()) {
             int risk = fraud.score(g.estimateCents, g.priorClaims, g.flaggedRepairShop, g.lateNightReport);
-            Channel ch = ChannelRouter.route(risk, g.estimateCents, g.recognitionConfidence, route);
-            CalcResult calc = calculator.calculate(g.id, g.estimateCents, g.policy.getDeductibleCents(),
-                    g.policy.getDepreciationPercent(), g.policy.getLimitCents(),
-                    DescriptionRules.liabilityPercent(g.description));
             actual.put("riskScore", risk);
-            actual.put("channel", ch.name());
-            actual.put("payableCents", calc.getPayableCents());
-            actual.put("requiredApprovers", approval.requiredApprovers(calc.getPayableCents(), ch));
+            String gateReason = com.qoder.claim.workflow.AssessGate.reason(g.estimateCents,
+                    DescriptionRules.claimedAmountCents(g.description), g.recognitionConfidence, gate, route);
+            if (gateReason != null) {
+                actual.put("channel", "MANUAL");
+                actual.put("payableCents", 0L);
+                actual.put("requiredApprovers", 0);
+            } else {
+                Channel ch = ChannelRouter.route(risk, g.estimateCents, g.recognitionConfidence, route);
+                CalcResult calc = calculator.calculate(g.id, g.estimateCents, g.policy.getDeductibleCents(),
+                        g.policy.getDepreciationPercent(), g.policy.getLimitCents(),
+                        DescriptionRules.liabilityPercent(g.description));
+                actual.put("channel", ch.name());
+                actual.put("payableCents", calc.getPayableCents());
+                actual.put("requiredApprovers", approval.requiredApprovers(calc.getPayableCents(), ch));
+            }
         } else {
             actual.put("payableCents", 0L);
         }

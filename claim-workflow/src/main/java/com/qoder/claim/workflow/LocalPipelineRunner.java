@@ -119,10 +119,15 @@ public class LocalPipelineRunner {
             int risk;
             AssessResult assess;
             try {
-                risk = act.fraudScore(caseNo);
                 assess = act.assess(caseNo);
+                risk = act.fraudScore(caseNo); // 定损写回后再评分，金额特征读真实估损
             } catch (Exception e) {
                 toManual(caseNo, "模型/识别服务不可用，降级人工通道: " + e.getMessage(), deadline);
+                return;
+            }
+            String gateReason = act.assessGate(caseNo);
+            if (gateReason != null) {
+                toManual(caseNo, gateReason, deadline);
                 return;
             }
             Channel ch = act.route(caseNo, risk, assess.getEstimateCents());
@@ -133,6 +138,12 @@ public class LocalPipelineRunner {
             }
             CalcResult calc = act.calculate(caseNo);
             act.setStatus(caseNo, CaseStatus.CALCULATED);
+            act.calcDualRun(caseNo); // F6 双跑比对（降级不阻塞）
+            String reviewReason = act.reviewGate(caseNo); // F7 强制门禁
+            if (reviewReason != null) {
+                toManual(caseNo, reviewReason, deadline);
+                return;
+            }
             int need = act.requiredApprovers(caseNo);
             if (need > 0) {
                 act.setStatus(caseNo, CaseStatus.APPROVING);

@@ -595,7 +595,7 @@ async function renderDetail(caseNo, silent = false) {
               <select name="approved"><option value="true">通过 / 确认</option><option value="false">驳回</option></select></div>
             <div class="field" id="amountField"><label>赔付金额（元）</label>
               <input type="number" name="amountYuan" step="0.01" min="0" value="${((c.payableCents || c.estimateCents || 0) / 100).toFixed(2)}">
-              <span class="hint">人工处理通道：金额 &gt; 0 走支付结案；填 0 或驳回则拒赔关闭</span></div>
+              <span class="hint">人工处理通道：批准必须填金额 &gt; 0（服务端强制校验）；驳回/关闭则拒赔</span></div>
             <div class="field"><label>操作员</label><input type="text" name="operator" value="理赔员-01" required></div>
             <div class="field"><label>意见</label><textarea name="comment" placeholder="决策依据，将写入审批记录与证据链" style="min-height:60px"></textarea></div>
             <button class="btn primary" type="submit" style="width:100%">提交决策（signal 编排引擎）</button>
@@ -623,6 +623,9 @@ async function renderDetail(caseNo, silent = false) {
           const f = e.target;
           const approved = f.approved.value === 'true';
           const amountCents = Math.round((Number(f.amountYuan?.value) || 0) * 100);
+          if (f.step.value === 'MANUAL_HANDLE' && approved && amountCents <= 0) {
+            toast('人工批准必须填写大于0的赔付金额；不赔付请选驳回/关闭', 'err'); return;
+          }
           try {
             await api(`/claims/${c.caseNo}/decision`, {
               method: 'POST', body: { step: f.step.value, approved, amountCents, operator: f.operator.value.trim(), comment: f.comment.value.trim() },
@@ -766,6 +769,9 @@ async function renderWorkbench(view) {
       const caseNo = f.dataset.no;
       const approved = f.approved.value === 'true';
       const amountCents = Math.round((Number(f.amountYuan?.value) || 0) * 100);
+      if (f.step.value === 'MANUAL_HANDLE' && approved && amountCents <= 0) {
+        toast('人工批准必须填写大于0的赔付金额；不赔付请选驳回/关闭', 'err'); return;
+      }
       try {
         await api(`/claims/${caseNo}/decision`, {
           method: 'POST', body: { step: f.step.value, approved, amountCents, operator: f.operator.value.trim() || '理赔员-01', comment: f.comment.value.trim() },
@@ -886,10 +892,12 @@ async function renderAudit(view) {
 
 /* ───────── 风控批处理 ───────── */
 async function renderBatch(view) {
-  let gs, gl, gh, ghist;
+  let gs, gl, gh, ghist, dual, shLatest, canary, fstrategy, nebula;
   try {
-    [gs, gl, gh, ghist] = await Promise.all([
+    [gs, gl, gh, ghist, dual, shLatest, canary, fstrategy, nebula] = await Promise.all([
       api('/graph/summary'), api('/gold/latest'), api('/gold/history'), api('/graph/history'),
+      api('/calc-dual-run/stats'), api('/shadow/latest'), api('/canary/config'),
+      api('/fraud/strategy'), api('/graph/nebula/status'),
     ]);
   } catch (e) { view.innerHTML = errCard(e); return; }
   const run = gs.latestRun ? norm([gs.latestRun])[0] : null;
@@ -898,6 +906,7 @@ async function renderBatch(view) {
   const shops = gs.shops || [];
   const flaggedShops = shops.filter(s => s.flagged).length;
   const passRate = gr && gr.total ? Math.round(gr.passed / gr.total * 100) : 0;
+  const shRun = shLatest.run ? norm([shLatest.run])[0] : null;
 
   view.innerHTML = `
     <div class="grid g4">
@@ -962,12 +971,56 @@ async function renderBatch(view) {
         <p class="hint mt">金标案 = 核赔师标注的期望裁决。规则引擎 / 计算器 / 评分器 / 阈值任何改动导致裁决偏离金标，回归立即报红。生产由 XXL-Job 日终调度。</p>
       </div>
     </div>
+    <div class="grid g2 mt">
+      <div class="card">
+        <h3>理算双跑监控<span class="sub">F6 LLM 草案 vs 确定性计算器 · 机器版人工推翻率</span></h3>
+        <div class="kv">
+          ${kv('比对总数', `<span class="mono">${dual.total ?? 0}</span>`)}
+          ${kv('一致率', `<span class="mono" style="color:${(dual.matchRate ?? 1) >= 0.95 ? 'var(--green)' : 'var(--amber)'}">${((dual.matchRate ?? 1) * 100).toFixed(1)}%</span>`)}
+          ${kv('差异数', `<span class="mono">${dual.mismatches ?? 0}</span>`)}
+        </div>
+        <p class="hint mt">最终金额以计算器为准；LLM 草案差异落 calc_dual_run 供监控。模型不可用自动降级单跑。</p>
+      </div>
+      <div class="card">
+        <h3>影子双跑<span class="sub">候选阈值重放历史案 · 不影响生产案件</span></h3>
+        <div class="kv">
+          ${kv('最近重放', shRun ? `${fmtFull(shRun.ts)}<br><span class="small muted">${shRun.total} 案 · 漂移 <b style="color:${shRun.drift_count > 0 ? 'var(--amber)' : 'var(--green)'}">${shRun.drift_count}</b></span>` : '尚未运行')}
+        </div>
+        <div class="row spread mt">
+          <span class="hint">上线新阈值前先跑影子，核查漂移面</span>
+          <button class="btn sm" id="shadowRun">执行影子双跑</button>
+        </div>
+      </div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">
+        <h3>灰度发布<span class="sub">案件号哈希分桶 + 机构/险种白名单 · 候选阈值</span></h3>
+        <form id="canaryForm">
+          <div class="field"><label>启用灰度</label>
+            <select name="enabled"><option value="false" ${canary.enabled ? '' : 'selected'}>关闭</option><option value="true" ${canary.enabled ? 'selected' : ''}>开启</option></select></div>
+          <div class="field"><label>灰度比例（%）</label>
+            <input type="number" name="percent" min="0" max="100" value="${canary.percent ?? 0}"></div>
+          <div class="field"><label>候选快赔阈值（元，留空沿用基线）</label>
+            <input type="number" name="fastYuan" step="1" min="0" value="${canary.candidateFastLimitCents != null ? canary.candidateFastLimitCents / 100 : ''}" placeholder="如 3000"></div>
+          <button class="btn sm primary" type="submit">保存灰度配置</button>
+        </form>
+        <p class="hint mt">CANARY 组用候选阈值分级，BASELINE 组与金标回归不受影响。</p>
+      </div>
+      <div class="card">
+        <h3>图存储与评分引擎<span class="sub">可选增强 · 默认关系库 + 规则评分</span></h3>
+        <div class="kv">
+          ${kv('欺诈评分策略', fstrategy.strategy === 'XGBOOST' ? '<span style="color:var(--cyan)">XGBoost(JPMML) 模型</span>' : '确定性规则')}
+          ${kv('NebulaGraph 实时图', nebula.enabled ? (nebula.healthy ? `<span style="color:var(--green)">在线</span> · ${nebula.caseVertices} 案件顶点` : '<span style="color:var(--rose)">离线</span>') : '未启用（关系库 T+1）')}
+        </div>
+        <p class="hint mt">XGBoost 演示模型由合成样本训练（deploy/model/），生产换真实标注案重训；NebulaGraph 实时增量与 T+1 重建互为对账。</p>
+      </div>
+    </div>
     <div class="card mt">
-      <h3>金标逐案结果<span class="sub">${gr ? '运行 #' + gr.id + ' · ' + fmtFull(gr.ts) : '尚未运行'}</span></h3>
+      <h3>金标逐案结果<span class="sub">${gr ? '运行 #' + gr.id + ' · ' + fmtFull(gr.ts) + ' · 共 ' + results.length + ' 案' : '尚未运行'}</span></h3>
       <div class="table-wrap"><table>
         <thead><tr><th>编号</th><th>场景</th><th>结果</th><th>漂移明细</th></tr></thead>
         <tbody>
-          ${results.map(r => `<tr>
+          ${results.slice(0, 100).map(r => `<tr>
             <td class="mono small" style="color:var(--cyan)">${esc(r.gold_id)}</td>
             <td>${esc(r.name)}</td>
             <td>${Number(r.passed) === 1 ? '<span class="st st-ok">通过</span>' : '<span class="st st-bad">漂移</span>'}</td>
@@ -975,6 +1028,7 @@ async function renderBatch(view) {
           </tr>`).join('') || '<tr><td colspan="4"><div class="empty"><em>◉</em>暂无结果，点击「执行回归」</div></td></tr>'}
         </tbody>
       </table></div>
+      ${results.length > 100 ? `<p class="hint mt">仅显示前 100 案（共 ${results.length} 案），完整结果见 GET /api/gold/latest。</p>` : ''}
     </div>`;
 
   $('#graphRun').onclick = async () => {
@@ -998,6 +1052,28 @@ async function renderBatch(view) {
       toast('金标回归失败：' + e.message, 'err');
       btn.disabled = false; btn.textContent = '执行回归';
     }
+  };
+  $('#shadowRun').onclick = async () => {
+    const btn = $('#shadowRun'); btn.disabled = true; btn.textContent = '重放中…';
+    try {
+      const r = await api('/shadow/run', { method: 'POST', body: {} });
+      toast(`影子双跑：${r.total} 案，漂移 ${r.driftCount}（${(r.driftRate * 100).toFixed(1)}%）`, r.driftCount > 0 ? 'err' : 'ok');
+      renderBatch(view);
+    } catch (e) {
+      toast('影子双跑失败：' + e.message, 'err');
+      btn.disabled = false; btn.textContent = '执行影子双跑';
+    }
+  };
+  $('#canaryForm').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    const body = { enabled: f.enabled.value === 'true', percent: Number(f.percent.value) || 0 };
+    if (f.fastYuan.value !== '') body.candidateFastLimitCents = Math.round(Number(f.fastYuan.value) * 100);
+    try {
+      await api('/canary/config', { method: 'POST', body });
+      toast('灰度配置已保存', 'ok');
+      renderBatch(view);
+    } catch (err) { toast('灰度配置保存失败：' + err.message, 'err'); }
   };
 }
 

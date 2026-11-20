@@ -27,7 +27,9 @@ class GraphBuildServiceTest {
         jdbc.execute("CREATE TABLE graph_node(node_type VARCHAR(16), node_key VARCHAR(128), label VARCHAR(256), props_json VARCHAR(2000), ts BIGINT, PRIMARY KEY(node_type, node_key))");
         jdbc.execute("CREATE TABLE graph_edge(id BIGINT AUTO_INCREMENT PRIMARY KEY, src_type VARCHAR(16), src_key VARCHAR(128), dst_type VARCHAR(16), dst_key VARCHAR(128), edge_type VARCHAR(32), ts BIGINT)");
         jdbc.execute("CREATE TABLE graph_build_run(id BIGINT AUTO_INCREMENT PRIMARY KEY, ts BIGINT, trigger_by VARCHAR(16), node_count INT, edge_count INT, shop_count INT, new_flag_count INT, duration_ms BIGINT)");
-        graph = new GraphBuildService(jdbc);
+        graph = new GraphBuildService(jdbc,
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(com.qoder.claim.infra.graph.NebulaGraphStore.class));
 
         jdbc.update("INSERT INTO policy_snapshot VALUES('P1','clause-2026-v1'),('P2','clause-2026-v1'),('P3','clause-2026-v1')");
         jdbc.update("INSERT INTO claim_case VALUES('C1','P1',6800000,85,'MANUAL')");
