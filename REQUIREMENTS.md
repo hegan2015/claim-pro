@@ -185,3 +185,52 @@ P0 实现默认值（`claim.route.*`，金额单位分；判定顺序：深查�
 ### 9.3 已知限制（与 §7 生产验收口径的差距）
 
 金标集已扩充至 2018 案（18 手工+2000 合成，独立 oracle 推导）+ 影子双跑 + 灰度发布（§4.1/DESIGN §11.20）；真实标注案替换合成集、2–4 周影子观察、三层对账的后两层（vs 核心/vs 银行回执，B3 支付渠道适配器本期不做）属生产上线项；视觉定损真实影像调用待配视觉 Key；XGBoost 为合成样本演示模型。§1 运营指标表为上线后验收基线，非原型验收口径。
+
+## 10. 术语表
+
+| 术语 | 含义 |
+|------|------|
+| FNOL | First Notice of Loss，首次报案受理 |
+| 核保/核赔 | 核保=判定事故是否属保险责任（条款判定）；核赔=人工审核赔付结论。本系统核保走规则引擎，核赔师做拒赔确认/审批/抽检 |
+| 定损 | 确定受损部件与维修估价；价格强制来自配件价格库（part_price），LLM 不得生成价格 |
+| 理算 | 按公式计算应赔金额：max(0, min(限额, (定损−折旧)×责任比例−免赔额))，纯代码计算器为准 |
+| 免责 | 条款约定的不赔情形（EXCL-PERIOD/TYPE/DRUNK/UNLICENSED/INTENTIONAL）；拒赔必有条款依据 |
+| 折旧/免赔额/责任比例/限额 | 理算四要素，来自保单快照；责任比例由描述关键词确定性映射（全责100/主要70/同等50/次要30） |
+| 三通道 | FAST 快赔（全自动）/ STANDARD 标准（自动理算+人工审批）/ INVESTIGATE 深查（SIU 人工）；另有 MANUAL 人工降级通道 |
+| SIU | Special Investigation Unit，欺诈特别调查组 |
+| 双账本 | 业务账（案件维度应收应付）+ 资金账（渠道维度实收实付），同库同事务落库 |
+| 事务消息/半消息/回查 | RocketMQ 支付一致性：先发半消息（不可见）→执行本地事务→COMMIT/ROLLBACK；进程崩则 broker 回查 outbox 状态补决策 |
+| outbox | 支付本地事务表（pay_outbox），幂等键=案件号:PAY:批次，事务消息回查依据 |
+| 幂等键 | 防重复处理的唯一键；支付=案件号+批次，核心登记=案件号 |
+| 证据哈希链 | 每步决策 digest=SHA256(前一条哈希\|本步输出)，链式锚定防篡改，读回校验 |
+| WORM | Write Once Read Many，一次写入多次读取的合规存储（证据≥10 年） |
+| 金标回归 | 核赔师标注案（含合成扩充）纯代码重放确定性核心，裁决漂移即红 |
+| 影子双跑 | 用候选阈值重放历史案统计漂移，不影响生产案件（上线前验证） |
+| 灰度发布 | 案件号哈希分桶+机构/险种白名单，将部分流量切到候选配置（CANARY 组） |
+| RAG | Retrieval-Augmented Generation，检索增强生成；条款原文向量化后语义检索供解释引用 |
+| embedding | 把文本映射为定长语义向量（bge-small-zh，512 维）；本地 ONNX 容器 :8100 |
+| BYOK | Bring Your Own Key，自带模型 API Key（如百炼）；与 Qoder 套餐 credits 分账 |
+| 估损/应赔 | estimate_cents=定损估价；payable_cents=理算应赔（最终以计算器/人工决策为准） |
+
+## 11. 需求追踪矩阵（需求 → 设计 → 代码 → 验证）
+
+| 需求 | DESIGN 章节 | 主要代码 | 验证 |
+|------|------------|---------|------|
+| F1 受理 | §11.1 | IntakeAgent · CaseService.report（同步建案幂等） | 冒烟「报案建案同步返回」 |
+| F2 识别 | §11.2 / §11.20 | VisionAssessService · CaseService.uploadMaterial/readMaterial · MaterialFileStore | VisionAssessServiceTest · 冒烟材料上传/读回/视觉留痕 |
+| F3 核保解释 | §11.3 / §11.20 | CoverageRuleEngine(Drools) · ClauseService · CoverageExplainAgent · ClauseVectorIndex | CoverageRuleEngineTest · 冒烟条款RAG/核保解释 |
+| F4 反欺诈 | §11.4 / §11.18 / §11.20 | FraudScorer/ModelFraudScorer/FraudScoringRouter · FraudReportAgent · GraphBuildService · NebulaGraphStore | ModelFraudScorerTest · GraphBuildServiceTest · 冒烟图谱 |
+| F5 定损 | §11.4 | AssessAgent · AssessTools（@Tool→工具网关）· part_price | 冒烟定损估价（价格带 priceSourceId） |
+| F6 理算 | §11.6 / §11.20 | ClaimCalculator · CalcDraftAgent · ClaimActivitiesImpl.calcDualRun | ClaimCalculatorTest · 冒烟双跑统计 |
+| F7 复核 | §11.20 | ReviewAgent · ReviewTools（只读）· ClaimActivitiesImpl.reviewGate | 冒烟复核门禁事件 |
+| F8 沟通 | §11.9 | NotifyAgent · AgentController.notify | 冒烟（503 降级气泡） |
+| R1 证据引用 | §11.13 | AbstractEvidenceStore（哈希链）· AssessResult.priceSourceId/evidenceRefs | 冒烟证据哈希链校验 |
+| R2 复核隔离 | §11.20 | reviewGate 独立卷宗（不含 F5 推理）· claim-review 队列 | 冒烟复核门禁 |
+| R3 双跑比对 | §11.20 | calcDualRun → calc_dual_run | 冒烟双跑监控统计 |
+| R4 双网关 | §11.14 / §11.15 | ToolGatewayImpl（白名单+ACL+审计+幂等）· LlmGatewayClient（路由/脱敏/熔断/计量） | GatewayChatModelTest · 冒烟工具审计 |
+| 分级路由 §5.2 | §11.5 / §11.20 | ChannelRouter · AssessGate · CanaryService | AssessGateTest · CanaryServiceTest · 冒烟门禁 |
+| 分级审批 §5.3 | §11.7 | ApprovalService（FAST 0/ >10万 2/其余 1） | LedgerAndApprovalTest |
+| 资金一致性 §5.4 | §11.8 / §5.3 | DoubleLedgerService · PaymentTransactionService · ReconciliationService | PaymentTransactionCheckTest · 冒烟双账本/对账 |
+| 拒赔人工确认 §5.3 | §11.10 | ClaimWorkflowImpl REJECT_CONFIRM · CaseService.humanDecision | 冒烟金额校验 |
+| 降级不停摆 §5.3 | §11.11 / §16 | AgentUnavailableException → MANUAL | 冒烟（default 档降级） |
+| 模型风险 §6 | §11.19 / §11.20 | GoldRegressionService · ShadowReplayService | GoldRegressionTest · 冒烟金标2018/影子 |

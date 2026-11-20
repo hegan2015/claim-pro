@@ -1,7 +1,8 @@
 # claim-pro 设计文档（DESIGN）
 
-版本：v1.1.0 ｜ 日期：2026-11-18 ｜ 状态：定稿（与 REQUIREMENTS.md v1.1.0 配套）
+版本：v1.2.0 ｜ 日期：2026-11-20 ｜ 状态：定稿（与 REQUIREMENTS.md v1.2.0 配套）
 口径：**商用生产架构**（非本地内置版）；消息层 **RocketMQ**（替代 Kafka）；编排 Temporal；agent 框架 LangChain4j；主力模型 DeepSeek。
+v1.2.0 变更：第二轮增强（§11.20）；§8 数据字典补全至 23 表；新增 §13 架构视图（组件/部署/安全）、§14 关键时序图、§15 API 契约、§16 错误处理与降级矩阵。
 v1.1.0 变更：新增 §11 业务流程设计详解（P0 实现如实描述，含每条流程的设计方案/步骤/实现位置/与生产差异）、§12 验证结果；§10.4/10.5 对齐当前交付现状。
 
 **文档地图**：[REQUIREMENTS](REQUIREMENTS.md)（需求与验收映射）· **DESIGN**（本文：目标架构 + 实现详解）· [OPERATIONS](OPERATIONS.md)（操作手册）· [COLLABORATION](COLLABORATION.md)（协作决策复盘）· [README](README.md)（入口与快速开始）
@@ -192,30 +193,70 @@ ReviewAgent agent = AiServices.builder(ReviewAgent.class)
 | 审批流 | 额度分级授权；>10 万双人；拒赔必须人工确认 |
 | 支付服务 | 持牌通道/银企直连；双账本（业务账+资金账）；幂等键=案件号+批次；日终对账+银行回执核对+长短款挂账+差错处理台 |
 
-## 8. 数据模型（核心表）
+## 8. 数据模型（完整数据字典，23 表）
 
-```
-claim_case        案件主数据(case_no PK, 状态, 通道, 机构, 险种, 出险日, 金额, 风险分)
-claim_material    材料(material_id, case_no, 类型, 对象存储键, 哈希, 置信度, 文件名, MIME, 字节数)
-claim_evidence    证据快照(evidence_id, case_no, step, input_hash, output_ref,
-                  model_version, prompt_version, ts)  → WORM 对象存储
-claim_decision    决策事件(与 RocketMQ 事件同构, 本地 outbox 副本)
-claim_approval    审批(approval_id, case_no, 级别, 审批人, 结论, ts)
-ledger_business   业务账(案件维度应收应付)
-ledger_fund       资金账(渠道维度实收实付)
-pay_outbox        支付本地事务表(幂等键, 状态, 事务消息回查依据)
-recon_diff        对账差异(三层对账结果, 差错处理状态)
-clause_version    条款版本(条款号, 生效区间, 文本, 规则包引用)
-graph_case_shop   案件↔修理厂关联登记(case_no, shop_name, source, ts；报案/定损登记)
-repair_shop_flag  修理厂风险标记(case_no, shop_name, reason, source=MANUAL|GRAPH_BATCH)
-graph_node        图谱节点(node_type CASE/POLICY/SHOP, node_key, props_json, ts)
-graph_edge        图谱边(src/dst type+key, edge_type INSURED_BY/REPAIRED_AT, ts)
-graph_build_run   图谱构建运行(ts, trigger_by, 节点/边/厂数, 新增标记数, 耗时)
-gold_run          金标回归运行(ts, trigger_by, total/passed/failed, 耗时)
-gold_case_result  金标逐案结果(run_id, gold_id, passed, mismatches_json)
-```
+> 与 `claim-gateway/src/main/resources/schema.sql`（H2）及 `deploy/mysql/001_schema.sql`（MySQL）逐表对齐。金额一律 **BIGINT 分**；时间戳一律 **BIGINT 毫秒**（审计可读时间另由 FROM_UNIXTIME 转换）。按业务域分组。
 
-分片：claim_* 按机构+年份；账本按机构。审计事件 RocketMQ→数仓保留≥10 年，本地 outbox 副本滚动 90 天。
+**① 案件域**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| claim_case | case_no | policy_no, org, insurance_type, accident_date, accident_type, status(12态), channel(4通道), estimate_cents, payable_cents, risk_score, recognition_confidence, reject_reason, description, created_at, updated_at | 案件主数据；status/channel 字典见 §11.0 |
+| claim_material | id（material_id UNIQUE） | case_no, type(ACCIDENT_REPORT/DAMAGE_PHOTO…), storage_key, sha256(内容哈希), confidence, file_name, content_type, size_bytes | 材料；size_bytes=NULL 表示仅元数据登记无文件本体 |
+| claim_approval | id | case_no, step(APPROVE/REJECT_CONFIRM/MANUAL_HANDLE), operator, approved(0/1), comment, amount_cents, ts | 人工决策留痕；管道轮询/signal 消费 |
+
+**② 保单与价格（确定性输入）**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| policy_snapshot | policy_no | effective_date, expiry_date, coverage_types(逗号串), limit_cents, deductible_cents, depreciation_percent, clause_version | 保单快照，核心系统适配加载，规则引擎只读 |
+| part_price | id | model_code, part_name, price_cents, source_id | 配件价格库；定损价格唯一来源（带 source_id 溯源） |
+
+**③ 资金域（双账本 + 一致性）**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| ledger_business | id | case_no, batch, direction(PAYABLE), amount_cents, ts | 业务账（案件维度应收应付） |
+| ledger_fund | id | case_no, batch, fund_channel, direction(OUT), amount_cents, ts | 资金账（渠道维度实收实付） |
+| pay_outbox | idem_key | case_no, batch, amount_cents, fund_channel, status(COMMITTED/ROLLED_BACK), ts | 支付本地事务表；幂等键=案件号:PAY:批次；事务消息回查依据 |
+| recon_diff | id | case_no, batch, biz_amount, fund_amount, status(OPEN/RESOLVED), ts | 对账差异（业务账 vs 资金账） |
+| core_register | case_no | result, ts | 核心系统登记幂等表（重复登记返回原结果） |
+
+**④ 证据与审计（可回放）**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| evidence_index | id | case_no, seq, evidence_id, object_key, sha256, prev_hash, step, ts | 证据哈希链索引；digest=SHA256(prev_hash\|output)，对象字节存 MinIO/本地（§11.13） |
+| claim_decision | id | trace_id, case_no, step, actor, model_version, prompt_version, input_hash, output_json, confidence, prompt_tokens, completion_tokens, ts | 决策事件（与 RocketMQ 事件同构，本地归档副本） |
+| tool_audit | id | tool_name, case_no, args_json, result_json(截2000), ts | 工具网关全量调用留痕 |
+
+**⑤ 欺诈图谱域**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| graph_case_shop | id（case_no+shop_name UNIQUE） | case_no, shop_name, source(INTAKE…), ts | 案件↔修理厂关联登记 |
+| repair_shop_flag | id | case_no, shop_name, reason, source(MANUAL/GRAPH_BATCH) | 修理厂风险标记；重建只清 GRAPH_BATCH，MANUAL 永久保留 |
+| graph_node | (node_type, node_key) | label, props_json, ts | 图谱节点 CASE/POLICY/SHOP（T+1 重建） |
+| graph_edge | id | src_type, src_key, dst_type, dst_key, edge_type(INSURED_BY/REPAIRED_AT), ts | 图谱边 |
+| graph_build_run | id | ts, trigger_by, node_count, edge_count, shop_count, new_flag_count, duration_ms | 图谱构建运行记录 |
+
+**⑥ 模型治理域（金标/双跑/影子）**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| gold_run | id | ts, trigger_by, total, passed, failed, duration_ms | 金标回归运行（2018 案） |
+| gold_case_result | id | run_id, gold_id, name, passed, mismatches_json, ts | 金标逐案结果 |
+| calc_dual_run | id | case_no, calc_payable_cents, draft_payable_cents, diff_cents, is_match, draft_json, ts | F6 理算双跑（计算器 vs LLM 草案） |
+| shadow_run | id | ts, config_json, total, drift_count, samples_json, duration_ms | 影子双跑（候选阈值重放历史案） |
+
+**⑦ 条款域**
+
+| 表 | 主键 | 关键列 | 说明 |
+|----|------|--------|------|
+| clause_text | clause_id | version, code(CLAUSE-*/EXCL-*), title, body, effective_from, effective_to | 条款原文库；核保解释 RAG 引用 + 向量化入 Qdrant（§11.20） |
+
+**分片与保留**：claim_* 按机构+年份分片（ShardingSphere，生产）；账本按机构。审计事件 RocketMQ→数仓保留≥10 年，本地 claim_decision 副本滚动 90 天；证据对象 MinIO WORM≥10 年。
+**增量 DDL**：存量库按序执行 deploy/mysql/003_material_files.sql（材料三列）→ 004_calc_dual_run.sql → 005_clause_text.sql → 006_shadow_run.sql（均幂等）；新环境 001 已含全部 23 表。
 
 ## 9. 可观测与 LLMOps
 
@@ -694,3 +735,211 @@ PAYING  双账本 + 事务消息 → CORE_REGISTER 核心登记 → SETTLED + �
 > 上一轮（2026-11-18）验证：单测 28/28、冒烟 24/24×本地+MinIO 双形态、MySQL 切库 14 表行数校验、XXL-Job 调度实测，见 git 历史与 COLLABORATION。
 
 验证计划（生产上线）：真实标注金标替换合成集 → 影子 2–4 周观察 → 灰度 5%→25%→100% → 视觉 Key 配置后真实影像验证 → XGBoost 真实数据重训 → NebulaGraph 集群化。
+
+## 13. 架构视图补充（as-built / 部署 / 安全）
+
+### 13.1 as-built 组件视图（9 Maven 模块）
+
+§2 是**目标商用架构**；下图是**当前实际落地**的模块分层与依赖方向（箭头=依赖）：
+
+```
+claim-gateway  REST API + SPA 工作台 + 批处理调度装配
+   │  依赖 ↓ 全部模块
+   ├── claim-workflow   编排：ClaimWorkflowImpl(Temporal) / LocalPipelineRunner(本地)
+   │      │              ClaimActivitiesImpl(activity 收口) · ChannelRouter · AssessGate · CanaryService
+   │      ├── claim-agents        8 agent 接口 + AgentFacade + VisionAssessService + @Tool 工具集
+   │      │      └── claim-agent-runtime  AgentFactory(AiServices 装配) · CaseContext(ThreadLocal 案件上下文)
+   │      │             └── claim-llm    GatewayChatModel/Streaming 双适配器 · LlmGatewayClient · MaskingService
+   │      ├── claim-core         确定性核心：CoverageRuleEngine(Drools) · ClaimCalculator · FraudScorer/ModelFraudScorer/Router
+   │      │                        ApprovalService · DoubleLedgerService · ReconciliationService
+   │      ├── claim-mq           RocketMQ 事件发布 + PaymentTransactionService(事务消息)
+   │      └── claim-infra        JDBC 仓储 · ToolGatewayImpl · 证据链(MinIO/本地) · 材料文件存储
+   │                               ClauseVectorIndex(Qdrant+ONNX) · NebulaGraphStore(可选)
+   └── claim-common             模型/端口接口 · DescriptionRules · IdempotencyKeys（被所有模块依赖）
+```
+
+**目标组件落地对照**（如实标注）：
+
+| §2 目标组件 | as-built 状态 |
+|---|---|
+| Temporal 集群编排 | ✅ 代码完整（default 档）；本机单节点 :7233；集群化属部署 |
+| 六队列 worker 池 + HPA | ✅ 六队列+独立限流已落地；K8s HPA 属部署 |
+| 工具网关（独立服务） | ⚠️ 进程内 ToolGatewayImpl（白名单+案件ACL+审计+幂等），接口与独立服务一致 |
+| 模型网关（独立服务） | ⚠️ 进程内 LlmGatewayClient（路由/脱敏/熔断/重试/计量），语义缓存/内容安全属 P1 |
+| Drools 规则引擎 | ✅ Drools 10.2.0 规则包（clause-2026-v1.drl） |
+| 私有 VL（vLLM） | ⚠️ doc-vision 端点可配（OpenAI 兼容多模态）；用户拍板保持文本降级，未配 Key |
+| XGBoost+图谱 | ✅ JPMML 适配器（合成演示模型）+ NebulaGraph 可选；真实数据重训/集群化属生产 |
+| ES+Milvus 检索 | ⚠️ 条款 RAG 用 Qdrant+本地 ONNX（复用 cs-pro 共享栈）；ES 全文属 P1 |
+| MySQL 集群+ShardingSphere | ⚠️ 单库 claim（共享栈）；分片属生产 |
+| MinIO WORM≥10年 | ⚠️ MinIO 对象存储已用；WORM 对象锁/合规保留属生产配置 |
+| OTel+SkyWalking 全链路 | ⚠️ trace_id+审计事件+token 计量已落地；OTel/SkyWalking 接入属 P1 |
+
+### 13.2 部署拓扑
+
+**三档 profile**（`CLAIM_PROFILE`，run.sh）：
+
+| 档位 | 编排 | 案件库 | 事件 | 证据/材料 | 调度 | 中间件依赖 |
+|------|------|--------|------|-----------|------|-----------|
+| local | LocalPipelineRunner | H2 文件 | 本地环回 | 本地磁盘 | Spring cron | 无（零依赖） |
+| **mysql（默认）** | LocalPipelineRunner | MySQL claim | 本地环回 | 本地磁盘 | XXL-Job 执行器 | MySQL |
+| default | Temporal | MySQL claim | RocketMQ | MinIO | XXL-Job 执行器 | 全栈 |
+
+**端口总表**（本机开发，六系统错开）：
+
+| 组件 | 端口 | 组件 | 端口 |
+|------|------|------|------|
+| claim-pro 工作台 | 8097 | XXL-Job 执行器 | 9999 |
+| Temporal gRPC / UI | 7233 / 8088 | XXL-Job 调度中心 | 8094 |
+| RocketMQ namesrv/broker/dashboard | 9876/10911/19876 | MySQL / Redis | 3306 / 6379 |
+| MinIO API/控制台 | 9000/9001 | Qdrant / cs-embedding | 6333 / 8100 |
+| NebulaGraph graphd（可选） | 9669/19669 | ops-pro 运维台 | 8098 |
+
+**生产目标拓扑**（K8s+Helm）：每类 agent 独立 Deployment（HPA 按 Task Queue 深度）；Temporal/RocketMQ/MySQL 同城双活（半同步复制 RPO≈0，RTO<30min）；模型网关多副本；私有 vLLM GPU 池独立命名空间；异地质检。中间件权威定义在 ops-pro `deploy/middleware-compose.yml`（项目名 claim-shared），claim-pro 与 cs-pro 复用同一套 MySQL/RocketMQ/Redis/Qdrant/embedding。
+
+### 13.3 安全架构
+
+| 层面 | 当前实现 | 生产目标 |
+|------|---------|---------|
+| 认证/授权 | ⚠️ 工作台无登录鉴权（原型）；工具网关案件级 ACL（caseNo 强制）+ 白名单 | OAuth2+mTLS API 网关；RBAC+案件级 ACL |
+| 密钥管理 | ✅ 仓库外 ~/.config/claim-pro/（700/600），仓库只留 *.example；MinIO/XXL/DB 口令环境变量注入 | KMS；凭据轮换 |
+| 数据脱敏 | ✅ MaskingService 前置（身份证/银行卡/手机号），多模态文本块脱敏、图像块原样；私有端点可关脱敏 | 个保法单独同意+脱敏不出域 |
+| 证据完整性 | ✅ SHA-256 哈希链（prev\|output）+ 材料内容哈希读回复核 + 工具全量审计 | WORM 对象锁≥10 年 |
+| 资金安全 | ✅ 双账本同事务+幂等键+事务消息回查+对账；金额 long 分 | 持牌通道+银行回执核对+挂账差错台 |
+| 内容安全 | ⚠️ agent 输出结构化校验+复核门禁 | 内容安全过滤+生成式算法备案 |
+| 合规 | ✅ 拒赔必有条款依据+人工确认；纯模型结论不得拒赔 | 等保三级（资金四级）+算法备案 |
+
+## 14. 关键时序图
+
+### 14.1 支付事务消息（资金一致性）
+
+```
+Workflow        PaymentTxService      RocketMQ Broker      DoubleLedger        支付执行器/核心
+   │ pay(no,amt)     │                     │                    │                    │
+   ├────────────────►│ ① 发半消息          │                    │                    │
+   │                 ├────────────────────►│ 暂存不可见         │                    │
+   │                 │ ② executeLocalTx    │                    │                    │
+   │                 ├─────────────────────────────────────────►│ 双账本+outbox 同事务│
+   │                 │◄─────────────────────────────────────────┤ COMMITTED          │
+   │                 │ ③ COMMIT_MESSAGE    │                    │                    │
+   │                 ├────────────────────►│ 消息可见           │                    │
+   │                 │                     ├────────────────────────────────────────►│ 划款+核心登记
+   │  [进程崩/网络断] │                     │ ④ 回查 outbox 状态 │                    │
+   │                 │◄────────────────────┤ checkLocalTx       │                    │
+   │                 ├─ 查 outbox ─────────────────────────────►│                    │
+   │                 │  COMMITTED→补COMMIT / 无→UNKNOWN 继续回查  │                    │
+```
+
+### 14.2 证据哈希链（防篡改审计）
+
+```
+Activity        EvidenceStore         evidence_index        对象存储(MinIO/本地)
+   │ archive(step,out)  │                   │                      │
+   ├───────────────────►│ 查本案上一条 seq/prevHash                │
+   │                    ├──────────────────►│                      │
+   │                    │ digest=SHA256(prevHash|out)              │
+   │                    │ payload{seq,prevHash,sha256,out,...}     │
+   │                    ├─────────────────────────────────────────►│ put {no}/{seq}.json
+   │                    ├──────────────────►│ INSERT 索引行        │
+   │ verifyChain(no)    │                   │                      │
+   ├───────────────────►│ 逐条读回对象字节 ────────────────────────►│ get
+   │                    │ 重算 digest 并核对 prevHash 衔接          │
+   │◄───────────────────┤ chainValid=true/false（改任一环即断链）   │
+```
+
+### 14.3 复核门禁 + 灰度路由（第二轮增强）
+
+```
+Workflow       ClaimActivities        CanaryService        ReviewAgent(claim-review队列)
+   │ calculate(no)  │                     │                    │
+   ├───────────────►│ 计算器 payable      │                    │
+   │ calcDualRun    │ LLM草案 vs 计算器 → calc_dual_run         │
+   │ route(no,risk,est)                   │                    │
+   ├───────────────►│ decideGroup ───────►│ CRC32(no)%100<percent?
+   │                │◄────────────────────┤ CANARY/BASELINE    │
+   │                │ CANARY→候选阈值 / BASELINE→基线 → ChannelRouter
+   │                │ ROUTE 证据记 canaryGroup                  │
+   │ reviewGate(no) │                     │                    │
+   ├───────────────►│ 独立卷宗(不含F5推理)─────────────────────►│ 审查
+   │                │◄─────────────────────────────────────────┤ {passed,challenges}
+   │                │ 质疑非空→toManual深查 / 通过→审批 / 模型不可用→降级跳过
+```
+
+## 15. API 契约（完整端点目录）
+
+> 基础路径 `/api`；请求/响应均 JSON（材料上传除外，multipart）。错误响应统一 `{"error":"..."}`，状态码见 §16。金额字段单位**分**。
+
+**① 案件 lifecycle（ClaimController）**
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| POST /claims | ClaimInput{policyNo, org?, insuranceType?, accidentDate?, accidentType, reporterPhone?, description} | ClaimCase（同步建案，含 caseNo/status=REPORTED） |
+| GET /claims?status=&channel=&limit= | query 过滤 | ClaimCase[] |
+| GET /claims/{no} | — | {case, materials[], approvals[], events[], ledgerBusiness[], ledgerFund[]} |
+| POST /claims/{no}/materials | Material[]{type, storageKey, confidence}（元数据登记，幂等去重） | {ok, count} |
+| POST /claims/{no}/materials/upload | multipart：file(≤20MB, jpg/jpeg/png/gif/webp/pdf), type, confidence? | Material（含 sha256/fileName/sizeBytes；同内容幂等返回原材料） |
+| GET /claims/{no}/materials/{mid}/content | — | 文件字节（Content-Type 由扩展名推导；读回复核哈希；仅登记材料 404） |
+| POST /claims/{no}/decision | HumanDecision{step, approved, amountCents, operator, comment} | {ok}（MANUAL_HANDLE 批准 amount≤0 → 400） |
+| POST /claims/{no}/dispute | {reason} | {ok}（任意等待节点转 MANUAL） |
+| GET /claims/{no}/evidence/verify | — | {caseNo, chainValid} |
+| GET /claims/{no}/tool-audit | — | ToolAudit[] |
+
+**② 运营/对账/统计（ClaimController）**
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| POST /recon/run · GET /recon/diffs | — | {newDiffs} · ReconDiff[] |
+| GET /stats | — | {totalCases, fastCases, byStatus{}, byChannel{}, paidCents, promptTokens, completionTokens, openReconDiffs} |
+| GET /audit/recent?limit= | — | DecisionEvent[]（≤200） |
+| GET /runtime | — | {orchestration: LOCAL\|TEMPORAL, evidenceStore} |
+| POST /admin/materials/migrate?direction= | local-to-minio \| minio-to-local | {direction, total, copied, skipped, failed[]} |
+| GET /calc-dual-run/stats · /recent?limit= | — | {total, matches, mismatches, matchRate} · CalcDualRun[] |
+| GET /clauses/search?q=&limit= | — | {query, hits[{clauseId, code, title, body, score}]} |
+
+**③ AI 能力（AgentController，/api/agent；未配 Key/熔断 → 503）**
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| GET /availability | — | {intake, assess, coverage-explain, fraud-report, review, notify, calc-draft, doc-vision: bool} |
+| POST /intake | {description} | {structured} |
+| POST /notify | {caseNo, question} | {reply} |
+| POST /review/{no} | — | {review} |
+| POST /coverage-explain/{no} | — | {caseNo, explanation, citedClauses[], vectorHits}（引用条款原文） |
+
+**④ 风控批处理/模型治理（BatchController）**
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| POST /graph/build · GET /graph/summary | — | {nodeCount, edgeCount, shopCount, newFlagCount, nebulaSync?} · {latestRun, shops[], manualFlagCount, batchFlagCount} |
+| GET /graph/case/{no} · /graph/history | — | 案件邻域 · 构建历史[] |
+| POST /gold/run · GET /gold/latest · /gold/history | — | {runId, total, passed, failed} · {run, results[]} · 历史[] |
+| POST /shadow/run | 候选阈值{fastLimitCents?, riskLow?, riskHigh?, confidenceMin?} | {total, driftCount, driftRate, candidate, samples[], durationMs} |
+| GET /shadow/latest | — | {run} |
+| GET /canary/config · POST /canary/config | {enabled?, percent?, orgs?, insuranceTypes?, candidateFastLimitCents?…} | 当前灰度配置 |
+| GET /fraud/strategy · /graph/nebula/status | — | {strategy: RULES\|XGBOOST} · {enabled, healthy?, caseVertices?} |
+
+## 16. 错误处理与降级矩阵
+
+**异常 → HTTP 映射**（ApiExceptionHandler）：
+
+| 异常 | 状态码 | 语义 |
+|------|--------|------|
+| InvalidDecisionException | 400 | 人工决策参数非法（批准但金额≤0） |
+| IllegalArgumentException | 404 | 资源不存在/参数非法（案件/材料不存在、非法扩展名、仅登记材料无本体） |
+| SecurityException | 403 | 工具网关拒绝（未注册工具/缺案件上下文） |
+| AgentUnavailableException | 503 | 模型端点未配置/熔断中（AI 能力降级） |
+| IllegalStateException | 503 | 服务态异常（证据写入失败/材料哈希不一致疑似篡改/编排未就绪） |
+
+**业务降级路径**（不停摆原则）：
+
+| 触发 | 降级行为 | 留痕 |
+|------|---------|------|
+| 模型/识别不可用（定损/评分异常） | 案件转 MANUAL 人工通道 | MANUAL 证据 + 原因 |
+| 视觉端点不可用 | 回退文本定损（置信度 0.9） | ASSESS_VISION degraded |
+| 复核模型不可用 | 跳过门禁（确定性结论不受影响） | REVIEW degraded |
+| 理算草案模型不可用 | 计算器单跑 | CALC_DUAL_RUN degraded |
+| 条款向量容器不可达 | 条款码直查原文（无 RAG 增强） | 日志 warn |
+| XGBoost 模型不可用 | 回退规则评分 | Router 日志 + strategy=RULES |
+| NebulaGraph 不可达 | 关系库 T+1 基线不受影响 | nebulaSync.error |
+| 空定损/索赔背离/低置信度 | 强制转 MANUAL（AssessGate） | ASSESS_GATE 证据 |
+| Temporal 未就绪（default 档） | 报案 503 提示启动中间件（不静默 mock） | — |
+| local 档中间态重启 | 仅续接四类等待态，其余告警不续接 | 启动日志 |
