@@ -2,7 +2,7 @@
 
 版本：v1.2.0 ｜ 日期：2026-11-20 ｜ 状态：定稿（与 REQUIREMENTS.md v1.2.0 配套）
 口径：**商用生产架构**（非本地内置版）；消息层 **RocketMQ**（替代 Kafka）；编排 Temporal；agent 框架 LangChain4j；主力模型 DeepSeek。
-v1.2.0 变更：第二轮增强（§11.20）；§8 数据字典补全至 23 表；新增 §13 架构视图（组件/部署/安全）、§14 关键时序图、§15 API 契约、§16 错误处理与降级矩阵。
+v1.2.0 变更：第二轮增强（§11.20）；§8 数据字典补全至 23 表；新增 §13 架构视图（组件/部署/安全）、§14 关键时序图、§15 API 契约、§16 错误处理与降级矩阵、§17 LLM 应用机制详解（逐场景：通用调用链路/机制矩阵/定损工具循环/真实输出样例）。
 v1.1.0 变更：新增 §11 业务流程设计详解（P0 实现如实描述，含每条流程的设计方案/步骤/实现位置/与生产差异）、§12 验证结果；§10.4/10.5 对齐当前交付现状。
 
 **文档地图**：[REQUIREMENTS](REQUIREMENTS.md)（需求与验收映射）· **DESIGN**（本文：目标架构 + 实现详解）· [OPERATIONS](OPERATIONS.md)（操作手册）· [COLLABORATION](COLLABORATION.md)（协作决策复盘）· [README](README.md)（入口与快速开始）
@@ -943,3 +943,79 @@ Workflow       ClaimActivities        CanaryService        ReviewAgent(claim-rev
 | 空定损/索赔背离/低置信度 | 强制转 MANUAL（AssessGate） | ASSESS_GATE 证据 |
 | Temporal 未就绪（default 档） | 报案 503 提示启动中间件（不静默 mock） | — |
 | local 档中间态重启 | 仅续接四类等待态，其余告警不续接 | 启动日志 |
+
+## 17. LLM 应用机制详解（逐场景）
+
+> 本节回答「每个场景 LLM 具体怎么干活」：喂什么、怎么调、吐什么、代码怎么接住。核心心智模型：**LLM 是「懂人话的助理」（理解/翻译/起草/沟通），不是「拍板的领导」（判定/算钱/审批/划款）**。不确定性被关在节点内部，拍板权全在确定性代码。
+
+### 17.1 一次 LLM 调用的通用链路
+
+所有场景共用同一条链。以定损为例，业务代码只写一个接口方法 `agents.assess(caseNo, contextJson)`（[AgentFacade.java:46](claim-agents/src/main/java/com/qoder/claim/agents/AgentFacade.java)），LangChain4j `AiServices` 动态代理把它展开为完整 LLM 交互：
+
+```
+接口方法调用
+  → AiServices 代理：@SystemMessage + 入参 + 返回类型 JSON schema 拼成 messages
+  → GatewayChatModel.chat()                         claim-llm/GatewayChatModel.java:55
+  → LlmGatewayClient.chat()                         claim-llm/LlmGatewayClient.java:83
+       脱敏前置 → 按 agentType 选端点 → 熔断检查 → 分类退避重试
+  → doChat() HTTP POST {base-url}/chat/completions  claim-llm/LlmGatewayClient.java:182
+       （真正的 LLM 推理在云端模型，本机只做拼 prompt/发请求/解析/管控）
+  → 响应 JSON → Jackson 反序列化为 POJO（AssessResult）或 String
+```
+
+**两个关键事实**：① LLM 不在本机跑，是 HTTP 调云端模型（默认 DeepSeek `api.deepseek.com/v1`）；② 返回类型是 POJO 还是 String，决定输出怎么被接住——这是各场景机制差异的根源。装配见 [AgentFactory.java](claim-agent-runtime/src/main/java/com/qoder/claim/runtime/AgentFactory.java)（每 agent 一个专属 GatewayChatModel + 工具集 + ChatMemory）。
+
+### 17.2 逐场景机制矩阵
+
+| 场景 | 喂给 LLM（真实 @SystemMessage 节选） | LLM 输出 | 代码接住方式 | 拍板权 |
+|------|--------------------------------------|---------|-------------|--------|
+| 受理 F1 | 「把口语报案转结构化 JSON…不确定填 null，不得编造」+ 描述 | JSON 字段（String） | 前端展示，**不阻塞立案** | 建案归代码 |
+| 定损 F5 | 「价格必须调 queryPartPrice 工具查库，禁止自行生成价格」+ 案件上下文 | 工具循环→items JSON | **AssessResult POJO** 自动解析（§17.3） | 价格归价格库 |
+| 核保解释 F3 | 「判定已由规则引擎做出，你无权改变结论…必须引用条款编号原文」+ 判定+条款原文 | 中文解释（String） | 直接展示 | 判定归 Drools |
+| 反欺诈报告 F4 | 「你无权定性欺诈、无权处置，只输出线索」+ 评分/图谱信号 | 线索报告（String） | 给 SIU 阅读 | 打分归评分器 |
+| 理算草案 F6 | 「公式 max(0,min(限额,(定损−折旧)×责任−免赔))…输出{payableCents,reasoning}」+ 五要素 | 草案金额 JSON | 解析 payableCents **与计算器比对落库** | 金额归计算器 |
+| 复核 F7 | 「独立审查…输出{passed,challenges[{point,evidenceRef,severity}]}」+ 独立卷宗 | 质疑清单 JSON | 解析 challenges，**非空→转人工** | 转人工归代码 |
+| 沟通 F8 | 「不承诺赔付金额时限，不改状态…争议情绪须升级人工」+ 真实状态+问题 | 回复（String） | 气泡展示 | 状态归代码 |
+
+规律：**要结构化结果的（定损/草案/复核）返回 POJO 或解析 JSON；要给人看的（解释/报告/沟通）返回 String。** 无论哪种，LLM 输出都只是建议/草稿/文本。各 agent 提示词全文见 [claim-agents/.../agents/](claim-agents/src/main/java/com/qoder/claim/agents/)。
+
+### 17.3 定损工具循环（ReAct，多轮）
+
+定损不是「问一句答一句」，而是多轮工具循环。LLM 全程**不报价**，只把部件名翻译成工具参数，价格由数据库返回：
+
+```
+第1轮  喂：system(定损员铁律) + user(案件上下文) + tools(queryPartPrice schema)
+       LLM 回：tool_call queryPartPrice(modelCode="VW-LAVIDA-2023", partName="前保险杠")
+       框架执行 @Tool 方法 → gateway.invoke("parts.price", CaseContext.get(), …)
+                            → 查 part_price 表 → {"priceCents":180000,"priceSourceId":"PP-1001"}
+                            → 留痕 tool_audit
+第2轮  喂回工具结果 → LLM 再请求查"左前大灯" → {"priceCents":240000,"priceSourceId":"PP-1002"}
+第3轮  LLM 拿两个真实价格 → 输出最终 items（框架解析成 AssessResult）：
+       {items:[{partName:"前保险杠",action:"REPLACE",priceCents:180000,priceSourceId:"PP-1001"},
+               {partName:"左前大灯",action:"REPLACE",priceCents:240000,priceSourceId:"PP-1002"}],
+        estimateCents:420000, evidenceRefs:[材料ID…]}
+```
+
+**为什么价格可信**：`@Tool` 只是 schema 语法糖，方法体内强制走工具网关（[AssessTools.java:19](claim-agents/src/main/java/com/qoder/claim/agents/tools/AssessTools.java)）；价格 180000/240000 是 part_price 表返回的，每项带 priceSourceId 可溯源。LLM 就算想编价格也编不进结果——铁律要求 priceCents 必须来自工具返回。工具网关再加案件级 ACL（定损 agent 碰不到支付类工具）。
+
+### 17.4 真实输出样例（实测抓取）
+
+**理算草案**（LLM 草稿 vs 计算器，落 calc_dual_run）：
+```json
+{"payableCents":328000,"reasoning":"max(0, min(200000000, (420000 - 420000×10%) × 100% - 50000)) = 328000"}
+```
+计算器同算 328000 → `is_match=1`。**最终赔多少以计算器为准**，草案仅用于监控 LLM 会不会算错（机器版人工推翻率）。
+
+**复核质疑**（LLM 挑刺，实测拦下过弱证据案）：
+```json
+{"passed": false, "challenges":[
+  {"point":"损伤照片文件仅 70 字节，且文件名为 smoke-photo.png，无法构成有效图像证据，无法核验损伤是否与追尾形态相符",
+   "evidenceRef":"CLM-…-M-4dee74","severity":"HIGH"}]}
+```
+challenges 非空 → 代码强制转 MANUAL 人工深查。**LLM 无「放行/拒绝」权，只能「提出质疑」，转人工的决定由代码做。**
+
+### 17.5 结构化输出 vs 文本输出
+
+- **POJO 返回**（AssessResult）：AiServices 依返回类型自动生成 JSON schema 指令注入 prompt，响应经 Jackson 映射为对象 + 校验；低置信度/解析失败转人工。
+- **String 返回**（review/explain/notify/report）：返回原始文本；需结构化的（review）由 activity 层 `extractJson` 截取首个 `{…}` 再 Jackson 解析（容错 markdown 围栏）。
+- **管控收口**：无论哪种，脱敏/路由/熔断/重试/token 计量都在 LlmGatewayClient 强制；工具调用经 ToolGatewayImpl 白名单+案件 ACL+全量审计。提示词铁律 + 代码层网关**双重约束**，不依赖模型自觉。
