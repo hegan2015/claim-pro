@@ -1,7 +1,8 @@
 # claim-pro 设计文档（DESIGN）
 
-版本：v1.2.0 ｜ 日期：2026-11-20 ｜ 状态：定稿（与 REQUIREMENTS.md v1.2.0 配套）
+版本：v1.2.1 ｜ 日期：2026-11-25 ｜ 状态：定稿（与 REQUIREMENTS.md v1.2.0 配套）
 口径：**商用生产架构**（非本地内置版）；消息层 **RocketMQ**（替代 Kafka）；编排 Temporal；agent 框架 LangChain4j；主力模型 DeepSeek。
+v1.2.1 变更：§17 增补 17.6-17.8——LangChain4j 装配过程与运行全流程（装配流程图/运行时序图/动态代理分派机制），含 jar 字节码取证与最小可运行复现实测（2026-11-25），并如实记录 ChatMemory 共享窗口边界。
 v1.2.0 变更：第二轮增强（§11.20）；§8 数据字典补全至 23 表；新增 §13 架构视图（组件/部署/安全）、§14 关键时序图、§15 API 契约、§16 错误处理与降级矩阵、§17 LLM 应用机制详解（逐场景：通用调用链路/机制矩阵/定损工具循环/真实输出样例）。
 v1.1.0 变更：新增 §11 业务流程设计详解（P0 实现如实描述，含每条流程的设计方案/步骤/实现位置/与生产差异）、§12 验证结果；§10.4/10.5 对齐当前交付现状。
 
@@ -1019,3 +1020,97 @@ challenges 非空 → 代码强制转 MANUAL 人工深查。**LLM 无「放行/�
 - **POJO 返回**（AssessResult）：AiServices 依返回类型自动生成 JSON schema 指令注入 prompt，响应经 Jackson 映射为对象 + 校验；低置信度/解析失败转人工。
 - **String 返回**（review/explain/notify/report）：返回原始文本；需结构化的（review）由 activity 层 `extractJson` 截取首个 `{…}` 再 Jackson 解析（容错 markdown 围栏）。
 - **管控收口**：无论哪种，脱敏/路由/熔断/重试/token 计量都在 LlmGatewayClient 强制；工具调用经 ToolGatewayImpl 白名单+案件 ACL+全量审计。提示词铁律 + 代码层网关**双重约束**，不依赖模型自觉。
+
+### 17.6 LangChain4j 装配过程（启动期，一次性）
+
+**依赖策略**：全仓仅引一个构件 `dev.langchain4j:langchain4j:1.0.1`（[pom.xml:38](pom.xml)，claim-llm 与 claim-agent-runtime 两模块使用），**不引** `langchain4j-open-ai` 等 provider starter——框架的"模型引擎位"被自研 SPI 实现替换（[GatewayChatModel.java:30-35](claim-llm/src/main/java/com/qoder/claim/llm/GatewayChatModel.java) 类注释明写"禁止 OpenAiChatModel 直配 apiKey 的 demo 用法"），使路由/熔断/脱敏/计量收口在框架与网络之间唯一的一条缝上。框架能力取舍：**用** AiServices 声明式 agent、@SystemMessage/@UserMessage/@Tool/@P、ChatModel/StreamingChatModel SPI、ChatMemory、JSON→POJO 绑定；**不用** RAG 模块（条款检索为自研 Qdrant HTTP）、Chains 图编排（流程归 Temporal）、框架 Json 序列化（丢 type 字段被 DeepSeek 400 拒，改手写 schemaToWire，见 [GatewayChatModel.java:147-191](claim-llm/src/main/java/com/qoder/claim/llm/GatewayChatModel.java)）。
+
+```mermaid
+flowchart TD
+    A[Spring 容器启动] --> B["AgentFacade 构造<br/>AgentFacade.java:27-36"]
+    B --> C["×7 调用 AgentFactory.build(接口, 路由名, tools)<br/>AgentFactory.java:29-35"]
+    subgraph D["AgentFactory.build 内部 :23-33"]
+        C --> D1["① new GatewayChatModel(gateway, agentType)<br/>路由名焊死实例（对应 yml llm.routes.*）"]
+        D1 --> D2["② AiServices.builder(agentInterface)<br/>只有接口 Class，无实现类"]
+        D2 --> D3["③ .chatModel(model) + .streamingChatModel(壳)<br/>框架引擎位 = 自研 SPI 实现"]
+        D3 --> D4["④ .chatMemory(窗口20条)"]
+        D4 --> D5{"有 tools 参数？"}
+        D5 -->|"assess: AssessTools<br/>review: ReviewTools"| D6["反射扫描 @Tool/@P<br/>→ ToolSpecification 清单（菜单）"]
+        D5 -->|其余 5 个| D7["跳过"]
+        D6 --> D8["⑤ build()<br/>= Proxy.newProxyInstance(接口, DefaultAiServices$1 handler)<br/>model/memory/toolSpecs 被闭包捕获"]
+        D7 --> D8
+    end
+    D8 --> E["7 个代理对象存入 AgentFacade 字段<br/>= 业务代码唯一可见的 LLM 入口<br/>GatewayChatModel 引用只存在于框架 handler 内部"]
+```
+
+装配期把自由度锁死：运行期无任何参数可选模型/端点/工具；业务代码拿不到 `GatewayChatModel` 引用，想绕网关必须重走 `AgentFactory.build()`，而该类只存在于装配栈局部（:24）。
+
+### 17.7 运行流程（一次 assess 调用的完整分派链）
+
+```mermaid
+sequenceDiagram
+    participant W as 业务层 ClaimActivitiesImpl
+    participant F as 门面 AgentFacade
+    participant P as 动态代理 $Proxy
+    participant H as handler DefaultAiServices$1(jar内)
+    participant G as GatewayChatModel
+    participant L as LlmGatewayClient
+    participant M as DeepSeek API
+    participant T as ToolGateway→价格库
+
+    Note over W: :160-165 拼上下文(case+materials+policy 全来自DB)
+    W->>F: :166 agents.assess(caseNo, context)
+    F->>F: guard :84-93 端点未配置/熔断→直接抛降级<br/>CaseContext.set(caseNo) :48
+    F->>P: :50 assess.assess(json)（invokeinterface，多态）
+    P->>H: 生成的方法体仅转发 h.invoke(proxy, method, args)
+    H->>H: 读 @SystemMessage 原文 + @UserMessage 实参<br/>+ chatMemory + ToolSpecification → 组 ChatRequest
+    H->>G: invokeinterface ChatModel.chat(ChatRequest) :727<br/>→ GatewayChatModel.chat :55
+    G->>G: toWireMessages :86 / toWireTools :138<br/>框架对象→OpenAI裸Map
+    G->>L: gateway.chat("assess", wire, tools, null) :56
+    L->>L: 路由:85→熔断闸:89→脱敏:93→重试(退避500ms·2^n):101
+    L->>M: HTTP POST /chat/completions
+    M-->>L: tool_calls: queryPartPrice(...)
+    L-->>G: Outcome{toolCalls, tokens} :106-108
+    G-->>H: AiMessage(ToolExecutionRequests)+TOOL_EXECUTION :64-78
+    loop 工具循环 ToolService.executeInferenceAndToolsLoop :774
+        H->>T: 反射调 AssessTools.queryPartPrice<br/>方法体内强制 gateway.invoke("parts.price", CaseContext.get())<br/>白名单+案件ACL+tool_audit 留痕
+        T-->>H: {"priceCents":180000,"priceSourceId":"PP-1001"}
+        H->>H: role:tool 消息入 chatMemory
+        H->>G: 回:727 再调一轮（messages 累积）
+    end
+    H-->>F: 按方法返回类型收口：AssessResult POJO 绑定 / String
+    F-->>W: finally CaseContext.clear() :52，结果回 activity
+    W->>W: :167-173 置信度/入库/归档 claim_decision(含tokens)<br/>→ 交给确定性门禁/路由/理算裁决
+```
+
+**动态代理三分句**（回答"这方法谁调的"）：
+1. `AgentFacade.assess` 字段值是 JVM 运行时生成的 `$Proxy`（实现 `AssessAgent` 接口、无任何业务逻辑，方法体只做 `handler.invoke` 转发）；
+2. 业务调接口方法 → `invokeinterface` 按接收者运行时类型进代理 → 代理进 handler；
+3. handler 拿着装配期闭包捕获的 `ChatModel` 引用，在 `DefaultAiServices.java:224` 处 `invokeinterface ChatModel.chat(ChatRequest)`，按实际类型落到 `GatewayChatModel.chat(:55)`——**仓库代码没有任何显式调用点，这是框架控制反转，属设计使然而非缺失**。
+
+失败收口：②~⑦ 任何一处 `LlmGatewayException` 被 guard 统一包成 `AgentUnavailableException`；工作流按环节显式降级（assess/intake→MANUAL、review→跳门禁、calc-draft→计算器单跑），主链路不因 LLM 故障阻断。
+
+### 17.8 取证与最小复现（2026-11-25 实测）
+
+**jar 字节码取证**（`javap -c` langchain4j-1.0.1.jar）：
+
+```
+DefaultAiServices.class :287      invokestatic Proxy.newProxyInstance(...)        ← 代理在 build() 内生成
+DefaultAiServices$1.class :727    invokeinterface ChatModel.chat:(ChatRequest)    ← 引擎位分派点
+DefaultAiServices$1.class :774    invokevirtual ToolService.executeInferenceAndToolsLoop(…, ChatModel, ChatMemory, …)
+```
+
+**最小可运行复现**：与生产同 jar、同 API 写独立 demo（`implements ChatModel` 的桩实现 + `AiServices.builder().chatModel(桩)`），只调接口方法、全程序无一行显式调 `chat(ChatRequest)`，运行时栈自证：
+
+```
+== agent 运行时类型: jdk.proxy2.$Proxy3        （是 JDK 动态代理，非任何仓库类）
+>>> chat(ChatRequest) 被调用了！收到消息 2 条   （= @SystemMessage 原文 + @UserMessage 实参）
+>>> 调用栈:
+      at dev.langchain4j.service.DefaultAiServices$1.invoke(DefaultAiServices.java:224)
+      at jdk.proxy2/jdk.proxy2.$Proxy3.assess(Unknown Source)
+      at ProxyDemo.main(ProxyDemo.java:42)
+```
+
+demo↔真实系统对照：`DemoChatModel`≡`GatewayChatModel`；`DemoAgent`≡`AssessAgent`；`main`≡`ClaimActivitiesImpl:166`；真实 assess 的 ChatRequest 另含 2 个 ToolSpecification，且线程为 Temporal activity 工作线程。
+
+**已知边界（如实记录）**：`AgentFactory.java:28` 每 agent 配的是**单实例共享**的 `MessageWindowChatMemory(20)` 且接口无 `@MemoryId`——本设计每次调用自带全量上下文、语义上单发，窗口的实际作用主要是承载同一调用内的工具循环；但并发多案时窗口会混入前案消息，属原型简化。生产化收敛选项：方法加 `@MemoryId(caseNo)` 按案隔离，或窗口置 0 纯单发。
